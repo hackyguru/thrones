@@ -1,0 +1,18 @@
+{
+  "name": "thrones",
+  "private": true,
+  "version": "0.1.0",
+  "workspaces": ["packages/*"],
+  "scripts": {
+    "dev": "concurrently -k -n server,client -c yellow,cyan \"npm run dev -w @thrones/server\" \"npm run dev -w @thrones/client\"",
+    "build": "npm run build -w @thrones/client",
+    "start": "npm run start -w @thrones/server",
+    "typecheck": "tsc -p packages/shared --noEmit && tsc -p packages/server --noEmit && tsc -p packages/client --noEmit",
+    "simtest": "tsx packages/shared/test/simtest.ts"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.0",
+    "tsx": "^4.19.2",
+    "typescript": "^5.6.3"
+  }
+}

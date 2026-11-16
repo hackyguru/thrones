@@ -1,0 +1,162 @@
+export type ResourceType = 'food' | 'wood' | 'gold' | 'stone';
+export const RESOURCE_TYPES: ResourceType[] = ['food', 'wood', 'gold', 'stone'];
+export type Resources = Record<ResourceType, number>;
+export type Cost = Partial<Resources>;
+
+export type CivId = 'maurya' | 'chola' | 'mughal' | 'rajput' | 'maratha' | 'vijayanagara';
+
+export type UnitClass = 'villager' | 'infantry' | 'ranged' | 'cavalry' | 'elephant';
+export type TargetClass = UnitClass | 'building';
+
+export type UnitType =
+  | 'villager'
+  | 'swordsman'
+  | 'spearman'
+  | 'archer'
+  | 'horseman'
+  | 'elephant'
+  | 'gajasena'
+  | 'velaikkarar'
+  | 'mansabdar'
+  | 'rajput_lancer'
+  | 'bargir'
+  | 'nayaka_archer';
+
+export type BuildingType =
+  | 'town_center'
+  | 'house'
+  | 'storehouse'
+  | 'farm'
+  | 'barracks'
+  | 'archery_range'
+  | 'stable'
+  | 'tower';
+
+export type ResourceNodeType = 'tree' | 'palm' | 'gold_mine' | 'stone_mine' | 'berry_bush';
+
+export type EntityKind = 'unit' | 'building' | 'resource';
+
+/** Animation state sent to clients. */
+export const Anim = { IDLE: 0, WALK: 1, ATTACK: 2, GATHER: 3, BUILD: 4 } as const;
+export type AnimCode = (typeof Anim)[keyof typeof Anim];
+
+export interface Vec2 {
+  x: number;
+  y: number;
+}
+
+// ---------------------------------------------------------------------------
+// Commands (client -> server, validated by the simulation)
+// ---------------------------------------------------------------------------
+export type Command =
+  | { c: 'smart'; ids: number[]; x: number; y: number; target?: number; queue?: boolean }
+  | { c: 'move'; ids: number[]; x: number; y: number }
+  | { c: 'attack'; ids: number[]; target: number }
+  | { c: 'build'; ids: number[]; type: BuildingType; tx: number; ty: number }
+  | { c: 'train'; building: number; type: UnitType }
+  | { c: 'cancel'; building: number; index: number }
+  | { c: 'rally'; building: number; x: number; y: number; target?: number }
+  | { c: 'stop'; ids: number[] }
+  | { c: 'delete'; ids: number[] };
+
+// ---------------------------------------------------------------------------
+// Snapshot data (server -> client)
+// ---------------------------------------------------------------------------
+export interface EntSnap {
+  i: number;
+  /** 0 unit, 1 building */
+  k: 0 | 1;
+  t: string;
+  o: number;
+  x: number;
+  y: number;
+  h: number;
+  m: number;
+  /** anim */
+  a?: AnimCode;
+  /** facing (radians) */
+  f?: number;
+  /** carry amount / type */
+  c?: number;
+  ct?: ResourceType;
+  /** gather type (tool to show) */
+  g?: ResourceType;
+  /** construction progress (buildings, 0..1). Absent when complete. */
+  p?: number;
+  /** training queue (owner only): [type, progress] */
+  q?: [UnitType, number][];
+  /** rally point (owner only) */
+  r?: [number, number];
+  /** farm food remaining */
+  fa?: number;
+}
+
+export type GameEvent =
+  | { e: 'proj'; a: number; tg: number; sx: number; sy: number; tx: number; ty: number; d: number; k: 'arrow' | 'bolt' }
+  | { e: 'hit'; tg: number; a: number; x: number; y: number }
+  | { e: 'die'; i: number; x: number; y: number; t: string; o: number; k: 0 | 1 }
+  | { e: 'built'; i: number; t: string }
+  | { e: 'trained'; i: number; t: string }
+  | { e: 'alert'; x: number; y: number }
+  | { e: 'defeat'; o: number }
+  | { e: 'popcap' };
+
+export interface PlayerSnap {
+  r: Resources;
+  pop: number;
+  cap: number;
+}
+
+export interface Snapshot {
+  t: number;
+  me: PlayerSnap | null;
+  e: EntSnap[];
+  /** resource amount changes [id, amount]; amount 0 = removed */
+  rc?: [number, number][];
+  ev?: GameEvent[];
+  /** alive flags by slot */
+  al: boolean[];
+}
+
+export interface PlayerInfo {
+  slot: number;
+  name: string;
+  civ: CivId;
+  color: number;
+  isAI: boolean;
+}
+
+export interface ResourceInit {
+  i: number;
+  t: ResourceNodeType;
+  x: number;
+  y: number;
+  a: number;
+}
+
+export interface GameInit {
+  seed: number;
+  mapSize: number;
+  /** one char per tile, terrain code */
+  terrain: string;
+  resources: ResourceInit[];
+  players: PlayerInfo[];
+  you: number;
+  starts: Vec2[];
+}
+
+export interface PlayerStats {
+  gathered: Resources;
+  unitsTrained: number;
+  unitsLost: number;
+  kills: number;
+  buildingsBuilt: number;
+  buildingsLost: number;
+  razed: number;
+}
+
+export interface GameOverInfo {
+  winner: number;
+  stats: { slot: number; name: string; civ: CivId; color: number; stats: PlayerStats; alive: boolean }[];
+  durationSec: number;
+}
