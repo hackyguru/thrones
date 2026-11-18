@@ -63,6 +63,7 @@ export class App {
     const ff = Number(new URLSearchParams(location.search).get('ff')) || 300;
     const link = new LocalLink(players, 0, { fastForwardSec: ff, seed: 4242 });
     this.backdrop = new Game(this.stage, link, { spectator: true, cinematic: true });
+    if (import.meta.env.DEV) (window as unknown as { __game: Game }).__game = this.backdrop;
     if (new URLSearchParams(location.search).has('ff')) {
       // follow the first army we can find
       const s = link.runner.session.world;

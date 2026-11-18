@@ -1,16 +1,11 @@
 import * as THREE from 'three';
+import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import { Terrain as T, makeNoise, mulberry32 } from '@thrones/shared';
-import { patchFow } from './fow';
+import { patchFow, timeUniform } from './fow';
+import * as TX from './textures';
+import { getPbr } from './assets';
 
 const R = 2; // vertices per tile
-
-const COLORS: Record<number, number[]> = {
-  [T.GRASS]: [0x7d9a4c, 0x8ca456, 0x6e8c42],
-  [T.DRY]: [0xb4a064, 0xa8925a, 0xc0ab72],
-  [T.DIRT]: [0x9a7a56, 0x8d6c4a, 0xa6865e],
-  [T.SAND]: [0xd8c58f, 0xcfb980, 0xe2d29e],
-  [T.WATER]: [0x6b7f60, 0x6b7f60, 0x6b7f60],
-};
 
 export class TerrainView {
   size: number;
@@ -19,6 +14,9 @@ export class TerrainView {
   vw: number;
   mesh: THREE.Mesh;
   water: THREE.Mesh;
+  /** grass tufts, one instanced mesh per map chunk (so off-screen chunks are culled) */
+  grass: THREE.Group;
+  private grassAt = new Map<number, { m: THREE.InstancedMesh; i: number }[]>();
   private waterNormal: THREE.Texture;
   group = new THREE.Group();
 
@@ -38,52 +36,56 @@ export class TerrainView {
       return this.terrain[y * size + x];
     };
 
-    // water fraction around each vertex (blurred)
-    const pos = new Float32Array(vw * vw * 3);
-    const col = new Float32Array(vw * vw * 3);
-    const uv = new Float32Array(vw * vw * 2);
-    const c = new THREE.Color();
-    const acc = new THREE.Color();
+    const n = vw * vw;
+    const pos = new Float32Array(n * 3);
+    const col = new Float32Array(n * 3);
+    const uv = new Float32Array(n * 2);
+    const splat = new Float32Array(n * 4);
     for (let vy = 0; vy < vw; vy++) {
       for (let vx = 0; vx < vw; vx++) {
         const X = vx / R, Y = vy / R;
+        // weighted terrain mix around the vertex (soft transitions)
+        const w = [0, 0, 0, 0];
         let wsum = 0, wn = 0;
         for (let dy = -2; dy <= 1; dy++)
           for (let dx = -2; dx <= 1; dx++) {
             const tx = Math.floor(X + dx + 0.5), ty = Math.floor(Y + dy + 0.5);
             const d = Math.hypot(tx + 0.5 - X, ty + 0.5 - Y);
             const wgt = Math.max(0, 1.9 - d);
-            wsum += (tileAt(tx, ty) === T.WATER ? 1 : 0) * wgt;
+            const t = tileAt(tx, ty);
+            wsum += (t === T.WATER ? 1 : 0) * wgt;
             wn += wgt;
+            const ch = t === T.GRASS ? 0 : t === T.DRY ? 1 : t === T.DIRT ? 2 : 3;
+            w[ch] += wgt;
           }
         const wf = wsum / wn;
+        // break up hard borders with noise
+        const nz = tint(X / 5, Y / 5);
+        w[1] += Math.max(0, nz - 0.62) * wn * 0.6;
+        w[2] += Math.max(0, tint(X / 3 + 40, Y / 3) - 0.68) * wn * 0.5;
+        const ws = w[0] + w[1] + w[2] + w[3];
+        const i = vy * vw + vx;
+        for (let k = 0; k < 4; k++) splat[i * 4 + k] = w[k] / ws;
         const land = hill(X / 18, Y / 18) * 0.55 - 0.1;
         const h = land * (1 - Math.min(1, wf * 2)) - 0.85 * Math.pow(wf, 0.8);
-        const i = vy * vw + vx;
         this.heights[i] = h;
         pos[i * 3] = X;
         pos[i * 3 + 1] = h;
         pos[i * 3 + 2] = Y;
-        uv[i * 2] = X / 5;
-        uv[i * 2 + 1] = Y / 5;
-        // colour: blend surrounding tiles
-        acc.setRGB(0, 0, 0);
-        let n = 0;
-        for (let dy = -1; dy <= 0; dy++)
-          for (let dx = -1; dx <= 0; dx++) {
-            const t = tileAt(Math.floor(X + dx + 0.5 * (dx + 1)), Math.floor(Y + dy + 0.5 * (dy + 1)));
-            const pal = COLORS[t];
-            const tv = tint(X / 6 + t * 10, Y / 6);
-            c.setHex(pal[0]).lerp(new THREE.Color(tv > 0.5 ? pal[1] : pal[2]), Math.abs(tv - 0.5) * 1.6);
-            acc.add(c);
-            n++;
-          }
-        acc.multiplyScalar(1 / n);
-        if (h < -0.15) acc.lerp(new THREE.Color(0x4f5d44), Math.min(1, (-h - 0.15) * 2));
-        const bright = 0.92 + tint(X * 0.9, Y * 0.9) * 0.16;
-        col[i * 3] = acc.r * bright;
-        col[i * 3 + 1] = acc.g * bright;
-        col[i * 3 + 2] = acc.b * bright;
+        uv[i * 2] = X / 3.2;
+        uv[i * 2 + 1] = Y / 3.2;
+        // vertex colour = large-scale tint & wet/underwater darkening
+        const b = 0.9 + tint(X * 0.35, Y * 0.35) * 0.2;
+        let r = b, g = b, bl = b;
+        if (h < -0.08) {
+          const k = Math.min(1, (-h - 0.08) * 2.2);
+          r *= 1 - k * 0.55;
+          g *= 1 - k * 0.42;
+          bl *= 1 - k * 0.3;
+        }
+        col[i * 3] = r;
+        col[i * 3 + 1] = g;
+        col[i * 3 + 2] = bl;
       }
     }
     const idx = new Uint32Array((vw - 1) * (vw - 1) * 6);
@@ -98,20 +100,56 @@ export class TerrainView {
     geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
     geo.setAttribute('color', new THREE.BufferAttribute(col, 3));
     geo.setAttribute('uv', new THREE.BufferAttribute(uv, 2));
+    geo.setAttribute('splat', new THREE.BufferAttribute(splat, 4));
     geo.setIndex(new THREE.BufferAttribute(idx, 1));
     geo.computeVertexNormals();
-    const detail = makeDetailTexture();
-    const m = patchFow(new THREE.MeshStandardMaterial({ vertexColors: true, map: detail, roughness: 0.96, metalness: 0 }));
+
+    // photo-scanned ground (CC0) when available, procedural fallback otherwise
+    const layer = (scan: 'ground_grass' | 'ground_dry' | 'ground_dirt' | 'ground_sand', proc: 'grass' | 'dry' | 'dirt' | 'sand') => {
+      const s = getPbr(scan);
+      if (s) return { map: s.map, normal: s.normal };
+      const t = TX.groundTex(proc);
+      return { map: t.map, normal: t.normal };
+    };
+    const grassT = layer('ground_grass', 'grass'), dryT = layer('ground_dry', 'dry'), dirtT = layer('ground_dirt', 'dirt'), sandT = layer('ground_sand', 'sand');
+    const m = new THREE.MeshStandardMaterial({ vertexColors: true, map: grassT.map, normalMap: grassT.normal, normalScale: new THREE.Vector2(0.9, 0.9), roughness: 0.95, metalness: 0 });
+    patchFow(m, (shader) => {
+      shader.uniforms.tDry = { value: dryT.map };
+      shader.uniforms.tDirt = { value: dirtT.map };
+      shader.uniforms.tSand = { value: sandT.map };
+      shader.uniforms.nDry = { value: dryT.normal };
+      shader.uniforms.nDirt = { value: dirtT.normal };
+      shader.uniforms.nSand = { value: sandT.normal };
+      shader.vertexShader = 'attribute vec4 splat;\nvarying vec4 vSplat;\n' + shader.vertexShader.replace('#include <uv_vertex>', '#include <uv_vertex>\nvSplat = splat;');
+      shader.fragmentShader =
+        'uniform sampler2D tDry;\nuniform sampler2D tDirt;\nuniform sampler2D tSand;\nuniform sampler2D nDry;\nuniform sampler2D nDirt;\nuniform sampler2D nSand;\nvarying vec4 vSplat;\n' +
+        shader.fragmentShader.replace(
+          '#include <normal_fragment_maps>',
+          THREE.ShaderChunk.normal_fragment_maps.replace('vec3 mapN = texture2D( normalMap, vNormalMapUv ).xyz * 2.0 - 1.0;', 'vec3 mapN = (texture2D(normalMap, vNormalMapUv).xyz * sw.x + texture2D(nDry, vNormalMapUv).xyz * sw.y + texture2D(nDirt, vNormalMapUv).xyz * sw.z + texture2D(nSand, vNormalMapUv).xyz * sw.w) * 2.0 - 1.0;'),
+        ).replace(
+          '#include <map_fragment>',
+          `vec2 tuv = vMapUv;
+          vec2 tuv2 = vMapUv * 0.27 + vec2(0.31, 0.17);
+          vec4 sw = vSplat;
+          // sharpen blends a little so patches read clearly
+          sw = pow(max(sw, vec4(0.0)), vec4(1.6)); sw /= max(1e-4, sw.x + sw.y + sw.z + sw.w);
+          vec4 c1 = texture2D(map, tuv) * sw.x + texture2D(tDry, tuv) * sw.y + texture2D(tDirt, tuv) * sw.z + texture2D(tSand, tuv) * sw.w;
+          vec4 c2 = texture2D(map, tuv2) * sw.x + texture2D(tDry, tuv2) * sw.y + texture2D(tDirt, tuv2) * sw.z + texture2D(tSand, tuv2) * sw.w;
+          diffuseColor *= mix(c1, c2, 0.4);`,
+        );
+    }, 'terrain');
     this.mesh = new THREE.Mesh(geo, m);
     this.mesh.receiveShadow = true;
     this.group.add(this.mesh);
 
-    // water
+    // water: glossy, reflective (picks up the scene environment) and slowly rippling
     this.waterNormal = makeWaterNormal();
     const wm = patchFow(
       new THREE.MeshStandardMaterial({
-        color: 0x2b7d8c, roughness: 0.12, metalness: 0.15, transparent: true, opacity: 0.84,
-        normalMap: this.waterNormal, normalScale: new THREE.Vector2(0.6, 0.6),
+        color: 0x1f6f7c, roughness: 0.14, metalness: 0.15, transparent: true, opacity: 0.86,
+        normalMap: this.waterNormal, normalScale: new THREE.Vector2(0.35, 0.35), envMapIntensity: 1.2,
+        // never bleed through the land above it
+        polygonOffset: true, polygonOffsetFactor: 4, polygonOffsetUnits: 8,
       }),
     );
     const wg = new THREE.PlaneGeometry(size, size, 1, 1);
@@ -121,14 +159,103 @@ export class TerrainView {
     this.water.receiveShadow = true;
     this.group.add(this.water);
 
-    // world border skirt
     const outer = new THREE.Mesh(
       new THREE.PlaneGeometry(size * 4, size * 4).rotateX(-Math.PI / 2).translate(size / 2, -1.2, size / 2),
       new THREE.MeshBasicMaterial({ color: 0x0b0907 }),
     );
     this.group.add(outer);
+
+    this.grass = this.buildGrass(seed);
+    this.group.add(this.grass);
   }
 
+  /** instanced grass tufts on grass & dry tiles */
+  private buildGrass(seed: number) {
+    const rng = mulberry32(seed ^ 0x6a55);
+    const card = (rot: number) => {
+      const p = new THREE.PlaneGeometry(1, 0.6, 1, 2);
+      p.translate(0, 0.3, 0);
+      p.rotateY(rot);
+      const na = p.getAttribute('normal');
+      for (let i = 0; i < na.count; i++) na.setXYZ(i, 0, 1, 0);
+      return p;
+    };
+    const geo = mergeGeometries([card(0), card(Math.PI / 3), card((2 * Math.PI) / 3)])!;
+    const m = new THREE.MeshStandardMaterial({ map: TX.grassTuft(), alphaTest: 0.4, side: THREE.DoubleSide, roughness: 0.9 });
+    patchFow(m, (shader) => {
+      shader.uniforms.uTime = timeUniform;
+      shader.vertexShader = 'uniform float uTime;\n' + shader.vertexShader.replace(
+        '#include <begin_vertex>',
+        `#include <begin_vertex>
+        vec3 gIp = vec3(instanceMatrix[3][0], 0.0, instanceMatrix[3][2]);
+        float gS = sin(uTime * 2.2 + gIp.x * 0.8 + gIp.z * 0.6) * 0.5 + sin(uTime * 3.7 + gIp.z) * 0.25;
+        transformed.x += gS * 0.08 * position.y;
+        transformed.z += gS * 0.05 * position.y;`,
+      );
+      shader.fragmentShader = shader.fragmentShader.replace('#include <normal_fragment_begin>', '#include <normal_fragment_begin>\nnormal = normalize(vNormal);');
+    }, 'grass');
+    const spots: { x: number; y: number; t: number }[] = [];
+    const size = this.size;
+    for (let y = 1; y < size - 1; y++)
+      for (let x = 1; x < size - 1; x++) {
+        const t = this.terrain[y * size + x];
+        if (t !== T.GRASS && t !== T.DRY && t !== T.DIRT) continue;
+        const count = t === T.GRASS ? 2 : 1;
+        for (let k = 0; k < count; k++) if (rng() < (t === T.DIRT ? 0.08 : t === T.DRY ? 0.3 : 0.5)) spots.push({ x: x + rng(), y: y + rng(), t });
+      }
+    const CH = 16;
+    const chunks = new Map<number, typeof spots>();
+    for (const sp of spots) {
+      const k = Math.floor(sp.y / CH) * 1024 + Math.floor(sp.x / CH);
+      if (!chunks.has(k)) chunks.set(k, []);
+      chunks.get(k)!.push(sp);
+    }
+    const out = new THREE.Group();
+    const mtx = new THREE.Matrix4();
+    const c = new THREE.Color();
+    for (const list of chunks.values()) {
+    const im = new THREE.InstancedMesh(geo, m, list.length);
+    im.receiveShadow = true;
+    out.add(im);
+    list.forEach((s, i) => {
+      const sc = 0.32 + rng() * 0.38;
+      mtx.compose(new THREE.Vector3(s.x, this.groundAt(s.x, s.y) - 0.02, s.y), new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), rng() * 6.28), new THREE.Vector3(sc, sc * (0.8 + rng() * 0.5), sc));
+      im.setMatrixAt(i, mtx);
+      if (s.t === T.GRASS) c.setRGB(1.0 + rng() * 0.2, 1.05 + rng() * 0.1, 0.75 + rng() * 0.15);
+      else if (s.t === T.DRY) c.setRGB(1.5, 1.25, 0.7);
+      else c.setRGB(1.2, 1.1, 0.75);
+      im.setColorAt(i, c);
+      const key = Math.floor(s.y) * size + Math.floor(s.x);
+      let l = this.grassAt.get(key);
+      if (!l) this.grassAt.set(key, (l = []));
+      l.push({ m: im, i });
+    });
+    im.instanceMatrix.needsUpdate = true;
+    if (im.instanceColor) im.instanceColor.needsUpdate = true;
+    im.computeBoundingSphere();
+    }
+    return out;
+  }
+
+  /** hide grass under a footprint (buildings, farms) */
+  clearGrass(tx: number, ty: number, size: number) {
+    const zero = new THREE.Matrix4().makeScale(0, 0, 0);
+    const changed = new Set<THREE.InstancedMesh>();
+    for (let y = ty - 1; y <= ty + size; y++)
+      for (let x = tx - 1; x <= tx + size; x++) {
+        const inside = x >= tx && y >= ty && x < tx + size && y < ty + size;
+        const l = this.grassAt.get(y * this.size + x);
+        if (!l || !inside) continue;
+        for (const { m, i } of l) {
+          m.setMatrixAt(i, zero);
+          changed.add(m);
+        }
+        this.grassAt.delete(y * this.size + x);
+      }
+    for (const m of changed) m.instanceMatrix.needsUpdate = true;
+  }
+
+  /** hide grass on a resource tile */
   tile(x: number, y: number) {
     const tx = Math.floor(x), ty = Math.floor(y);
     if (tx < 0 || ty < 0 || tx >= this.size || ty >= this.size) return T.WATER;
@@ -151,35 +278,9 @@ export class TerrainView {
   }
 
   update(t: number) {
+    timeUniform.value = t;
     this.waterNormal.offset.set(t * 0.012, t * 0.007);
   }
-}
-
-function makeDetailTexture(): THREE.Texture {
-  const s = 256;
-  const cv = document.createElement('canvas');
-  cv.width = cv.height = s;
-  const g = cv.getContext('2d')!;
-  const img = g.createImageData(s, s);
-  const rng = mulberry32(99);
-  const n = makeNoise(rng);
-  for (let y = 0; y < s; y++)
-    for (let x = 0; x < s; x++) {
-      // tileable noise: blend of wrapped lattice + grain
-      const v = (n((x / s) * 8, (y / s) * 8, 3) + n(((x + s / 2) % s) / s * 8 + 20, ((y + s / 2) % s) / s * 8 + 20, 3)) * 0.3 + rng() * 0.4;
-      const c = 222 + v * 33;
-      const i = (y * s + x) * 4;
-      img.data[i] = c;
-      img.data[i + 1] = c;
-      img.data[i + 2] = c;
-      img.data[i + 3] = 255;
-    }
-  g.putImageData(img, 0, 0);
-  const t = new THREE.CanvasTexture(cv);
-  t.wrapS = t.wrapT = THREE.RepeatWrapping;
-  t.colorSpace = THREE.SRGBColorSpace;
-  t.anisotropy = 4;
-  return t;
 }
 
 function makeWaterNormal(): THREE.Texture {

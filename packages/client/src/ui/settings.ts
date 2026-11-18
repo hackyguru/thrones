@@ -17,6 +17,7 @@ function save(k: string, v: string) {
 }
 
 export type OrderClick = 'single' | 'double' | 'right';
+export type Graphics = 'auto' | 'high' | 'medium' | 'low';
 
 export const settings = {
   /**
@@ -35,6 +36,14 @@ export const settings = {
   /** left-click (single or double) gives orders */
   get leftClickCommands() {
     return this.orderClick !== 'right';
+  },
+  /** graphics quality; 'auto' adapts render resolution / frame rate to keep motion smooth */
+  get graphics(): Graphics {
+    const v = load('graphics', 'auto');
+    return v === 'high' || v === 'medium' || v === 'low' ? v : 'auto';
+  },
+  set graphics(v: Graphics) {
+    save('graphics', v);
   },
   get hintSeen() {
     return load('hintSeen', '0') === '1';

@@ -2,8 +2,10 @@ import * as THREE from 'three';
 import { BUILDINGS, type BuildingType, type CivId, type UnitType } from '@thrones/shared';
 import { buildBuilding, buildUnit } from './models';
 import { fowUniforms } from './fow';
+import { skyScene } from './engine';
 
 let renderer: THREE.WebGLRenderer | null = null;
+let env: THREE.Texture | null = null;
 const cache = new Map<string, string>();
 const white = new THREE.DataTexture(new Uint8Array([255, 255, 255, 255]), 1, 1);
 white.needsUpdate = true;
@@ -14,6 +16,9 @@ function setup() {
   renderer.setSize(128, 128);
   renderer.setPixelRatio(1);
   renderer.toneMapping = THREE.ACESFilmicToneMapping;
+  const pmrem = new THREE.PMREMGenerator(renderer);
+  env = pmrem.fromScene(skyScene(), 0.03).texture;
+  pmrem.dispose();
   return renderer;
 }
 
@@ -24,7 +29,9 @@ export function portrait(kind: 'unit' | 'building', type: string, civ: CivId, co
   if (hit) return hit;
   const r = setup();
   const scene = new THREE.Scene();
-  scene.add(new THREE.HemisphereLight(0xfff4e0, 0x6a5a40, 2.2));
+  scene.environment = env;
+  scene.environmentIntensity = 0.6;
+  scene.add(new THREE.HemisphereLight(0xfff4e0, 0x6a5a40, 1.4));
   const sun = new THREE.DirectionalLight(0xffe0b0, 2.6);
   sun.position.set(-3, 5, 4);
   scene.add(sun);

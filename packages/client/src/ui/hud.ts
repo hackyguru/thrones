@@ -9,7 +9,7 @@ import type { CEnt } from '../game/entities';
 import { portrait } from '../render/portraits';
 import { ICONS, costHtml } from './icons';
 import { sfx } from '../audio/sfx';
-import { controlsTable, isMac, orderVerb, settings, type OrderClick } from './settings';
+import { controlsTable, isMac, orderVerb, settings, type Graphics, type OrderClick } from './settings';
 
 const GRID_KEYS = ['Q', 'W', 'E', 'R', 'A', 'S', 'D', 'F', 'Z', 'X', 'C', 'V'];
 
@@ -92,6 +92,13 @@ export class Hud {
               <option value="double" ${settings.orderClick === 'double' ? 'selected' : ''}>Double-click</option>
               <option value="single" ${settings.orderClick === 'single' ? 'selected' : ''}>Single click</option>
             </select></label>
+          <label class="toggle">Graphics
+            <select class="graphics">
+              <option value="auto" ${settings.graphics === 'auto' ? 'selected' : ''}>Auto (smoothest)</option>
+              <option value="high" ${settings.graphics === 'high' ? 'selected' : ''}>High</option>
+              <option value="medium" ${settings.graphics === 'medium' ? 'selected' : ''}>Medium</option>
+              <option value="low" ${settings.graphics === 'low' ? 'selected' : ''}>Low</option>
+            </select></label>
           <button class="btn ghost" data-act="controls">Controls</button>
         </div>
       </div>`;
@@ -128,6 +135,10 @@ export class Hud {
     });
     on(this.q('.order-click'), 'change', (e) => {
       settings.orderClick = (e.target as HTMLSelectElement).value as OrderClick;
+    });
+    on(this.q('.graphics'), 'change', (e) => {
+      settings.graphics = (e.target as HTMLSelectElement).value as Graphics;
+      game.engine.setGraphics(settings.graphics);
     });
     on(this.q('.help-btn'), 'click', () => this.showControls());
     on(this.q('.controls'), 'click', (e) => {

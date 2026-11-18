@@ -9,8 +9,12 @@ export const fowUniforms = {
   uMapSize: { value: 128 },
 };
 
-export function patchFow<T extends THREE.Material>(mat: T): T {
+/** time uniform shared by animated (wind) shaders */
+export const timeUniform = { value: 0 };
+
+export function patchFow<T extends THREE.Material>(mat: T, extra?: (shader: THREE.WebGLProgramParametersWithUniforms) => void, cacheKey = 'fow1'): T {
   mat.onBeforeCompile = (shader) => {
+    extra?.(shader);
     shader.uniforms.uFow = fowUniforms.uFow;
     shader.uniforms.uMapSize = fowUniforms.uMapSize;
     shader.vertexShader =
@@ -34,7 +38,7 @@ export function patchFow<T extends THREE.Material>(mat: T): T {
         #include <fog_fragment>`,
       );
   };
-  mat.customProgramCacheKey = () => 'fow1';
+  mat.customProgramCacheKey = () => cacheKey;
   return mat;
 }
 

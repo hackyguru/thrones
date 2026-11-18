@@ -94,6 +94,10 @@ export class Game {
     };
     const civ = this.civOf(s.o), pc = this.colorOf(s.o);
     e.view = s.k === 0 ? new UnitView(e, civ, pc, this.ringColor(s.o)) : new BuildingView(e, civ, pc, this.ringColor(s.o), this.terrain);
+    if (s.k === 1) {
+      const size = BUILDINGS[s.t as BuildingType].size;
+      this.terrain.clearGrass(Math.round(s.x - size / 2), Math.round(s.y - size / 2), size);
+    }
     this.worldGroup.add(e.view.root);
     applySnap(e, s, now);
     e.x = e.px = e.nx;

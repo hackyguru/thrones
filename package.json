@@ -2,7 +2,9 @@
   "name": "thrones",
   "private": true,
   "version": "0.1.0",
-  "workspaces": ["packages/*"],
+  "workspaces": [
+    "packages/*"
+  ],
   "scripts": {
     "dev": "concurrently -k -n server,client -c yellow,cyan \"npm run dev -w @thrones/server\" \"npm run dev -w @thrones/client\"",
     "build": "npm run build -w @thrones/client",
@@ -11,7 +13,10 @@
     "simtest": "tsx packages/shared/test/simtest.ts"
   },
   "devDependencies": {
+    "@gltf-transform/core": "^4.5.1",
+    "@gltf-transform/functions": "^4.5.1",
     "concurrently": "^9.1.0",
+    "gltfpack": "^0.24.0",
     "tsx": "^4.19.2",
     "typescript": "^5.6.3"
   }

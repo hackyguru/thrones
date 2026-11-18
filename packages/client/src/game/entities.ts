@@ -1,6 +1,8 @@
 import * as THREE from 'three';
 import { Anim, BUILDINGS, UNITS, type BuildingType, type CivId, type EntSnap, type ResourceType, type UnitType } from '@thrones/shared';
 import { buildBuilding, buildScaffold, buildUnit, type Rig } from '../render/models';
+import { clipDuration, holdLegs, play } from '../render/characters';
+import { mountClipDuration, playMount } from '../render/mounts';
 import type { TerrainView } from '../render/terrain';
 
 export interface CEnt {
@@ -102,12 +104,55 @@ export class UnitView {
     this.root.add(this.bar.group);
   }
 
+  /** animation time owed to units that were off-screen */
+  private animDebt = 0;
+  private static frustum = new THREE.Frustum();
+  private static frustumFrame = -1;
+  private static sphere = new THREE.Sphere(new THREE.Vector3(), 1.5);
+
   update(dt: number, terrain: TerrainView, cam: THREE.Camera, now: number) {
     const e = this.ent;
     const rig = this.rig;
+    // skinned characters are expensive: only animate the ones the camera can see
+    if (rig.human || rig.riders) {
+      const frame = Math.floor(now / 8);
+      if (UnitView.frustumFrame !== frame) {
+        UnitView.frustumFrame = frame;
+        cam.updateMatrixWorld();
+        UnitView.frustum.setFromProjectionMatrix(new THREE.Matrix4().multiplyMatrices((cam as THREE.PerspectiveCamera).projectionMatrix, cam.matrixWorldInverse));
+      }
+      UnitView.sphere.center.set(e.x, 0.6, e.y);
+      if (!UnitView.frustum.intersectsSphere(UnitView.sphere) && e.dying < 0) {
+        this.animDebt += dt;
+        this.root.position.set(e.x, terrain.groundAt(e.x, e.y), e.y);
+        return;
+      }
+      if (this.animDebt > 0) {
+        dt += Math.min(this.animDebt, 1);
+        this.animDebt = 0;
+      }
+    }
     this.root.position.set(e.x, terrain.groundAt(e.x, e.y), e.y);
     if (e.dying >= 0) {
       e.dying += dt;
+      if (rig.human) {
+        play(rig.human, 'Death01', { once: true, fade: 0.1 });
+        rig.human.mixer.update(dt);
+        if (e.dying > 2.2) rig.root.position.y = -(e.dying - 2.2) * 0.4;
+        this.ring.visible = false;
+        this.bar.group.visible = false;
+        return;
+      }
+      if (rig.mount) {
+        playMount(rig.mount, 'Death', { once: true, fade: 0.15 });
+        rig.mount.mixer.update(dt);
+        for (const rr of rig.riders ?? []) rr.mixer.update(dt);
+        if (e.dying > 2.6) rig.root.position.y = -(e.dying - 2.6) * 0.4;
+        this.ring.visible = false;
+        this.bar.group.visible = false;
+        return;
+      }
+      for (const rr of rig.riders ?? []) rr.mixer.update(dt);
       const k = Math.min(1, e.dying / 0.45);
       rig.root.rotation.z = (Math.PI / 2) * k * (rig.kind === 'human' ? 1 : 0.9);
       rig.root.position.y = rig.kind === 'human' ? k * 0.1 : k * (rig.kind === 'elephant' ? 0.5 : 0.25);
@@ -135,10 +180,97 @@ export class UnitView {
     this.animate(dt);
   }
 
+  /** skinned human: pick a motion-captured clip for the current activity */
+  private animateHuman(dt: number) {
+    const e = this.ent;
+    const r = this.rig;
+    const h = r.human!;
+    const def = UNITS[e.type as UnitType];
+    if (r.tools.axe) {
+      r.tools.axe.visible = e.a === Anim.GATHER && e.g === 'wood';
+      r.tools.pick!.visible = e.a === Anim.GATHER && (e.g === 'gold' || e.g === 'stone');
+      r.tools.hammer!.visible = e.a === Anim.BUILD;
+      r.tools.basket!.visible = e.a === Anim.GATHER && e.g === 'food';
+      for (const k of ['wood', 'gold', 'stone', 'food'] as ResourceType[]) {
+        const c = r.carry[k];
+        if (c) c.visible = e.c > 0 && e.ct === k && e.a !== Anim.GATHER;
+      }
+    }
+    const melee = !def.ranged;
+    switch (e.a) {
+      case Anim.WALK:
+        // laden villagers walk; everyone else jogs
+        if (e.c > 0 && e.type === 'villager') play(h, 'Walk_Loop', { timeScale: Math.min(1.3, Math.max(0.7, this.speed / 1.3)) });
+        else play(h, 'Jog_Fwd_Loop', { timeScale: Math.min(1.35, Math.max(0.6, this.speed / 2.0)) });
+        break;
+      case Anim.ATTACK:
+        if (e.type === 'villager') play(h, 'Punch_Jab', { timeScale: clipDuration('Punch_Jab') / this.cooldown });
+        else if (melee) play(h, 'Sword_Attack', { timeScale: clipDuration('Sword_Attack') / this.cooldown });
+        else play(h, 'Spell_Simple_Shoot', { timeScale: clipDuration('Spell_Simple_Shoot') / this.cooldown });
+        break;
+      case Anim.GATHER:
+        if (e.g === 'food') play(h, 'PickUp_Table', { timeScale: 0.9 });
+        else if (e.g === 'wood') play(h, 'Chop_Loop');
+        else play(h, 'Mine_Loop');
+        break;
+      case Anim.BUILD:
+        play(h, 'Fixing_Kneeling');
+        break;
+      default:
+        play(h, def.cls !== 'villager' && melee ? 'Sword_Idle' : 'Idle_Loop');
+    }
+    h.mixer.update(dt);
+  }
+
+  /** sculpted horse / elephant: gait follows ground speed */
+  private animateMount(dt: number) {
+    const e = this.ent;
+    const m = this.rig.mount!;
+    if (e.a === Anim.WALK) {
+      if (m.kind === 'horse') {
+        if (this.speed > 1.5) playMount(m, 'Run', { timeScale: Math.min(1.4, Math.max(0.75, this.speed / 2.6)) });
+        else playMount(m, 'Walk', { timeScale: Math.min(1.5, Math.max(0.6, this.speed / 0.9)) });
+      } else playMount(m, 'Walk', { timeScale: Math.min(1.6, Math.max(0.6, this.speed / 0.8)) });
+    } else if (e.a === Anim.ATTACK && m.kind === 'elephant') {
+      playMount(m, 'Attack', { timeScale: mountClipDuration('elephant', 'Attack') / this.cooldown });
+    } else playMount(m, 'Idle');
+    m.mixer.update(dt);
+  }
+
+  /** riders keep their seat; the warrior's upper body swings or shoots when attacking */
+  private animateRiders(dt: number) {
+    const e = this.ent;
+    const rs = this.rig.riders!;
+    const def = UNITS[e.type as UnitType];
+    const lead = rs[0];
+    const elephant = this.rig.mount?.kind === 'elephant';
+    // seated / standing legs stay put; only the upper body acts
+    if (this.rig.mount) {
+      holdLegs(lead, elephant ? 'Sitting_Idle_Loop' : 'Ride_Loop');
+      for (const r of rs.slice(1)) holdLegs(r, 'Ride_Loop');
+    }
+    if (e.a === Anim.ATTACK) {
+      const clip = def.ranged || def.cls === 'elephant' ? 'Spell_Simple_Shoot' : 'Sword_Attack';
+      play(lead, clip, { upper: true, timeScale: clipDuration(clip) / this.cooldown });
+    } else if (this.rig.mount) play(lead, elephant ? 'Sitting_Idle_Loop' : 'Ride_Loop', { upper: true });
+    else play(lead, 'Sitting_Idle_Loop');
+    for (const r of rs) r.mixer.update(dt);
+  }
+
   private animate(dt: number) {
     const e = this.ent;
     const r = this.rig;
     const t = this.animT;
+    if (r.human) {
+      this.animateHuman(dt);
+      return;
+    }
+    if (r.mount) {
+      this.animateRiders(dt);
+      this.animateMount(dt);
+      return;
+    }
+    if (r.riders) this.animateRiders(dt);
     const legs = r.legs;
     // reset
     r.body.position.y = 0;
