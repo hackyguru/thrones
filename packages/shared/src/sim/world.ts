@@ -1,7 +1,7 @@
 import {
   INTERACT_RANGE, MAX_QUEUE, POP_HARD_CAP, PROJECTILE_SPEED, START_RESOURCES, TICK_RATE, Terrain,
 } from '../constants';
-import { BUILDINGS, RESOURCE_NODES } from '../data/buildings';
+import { BUILDINGS, RESOURCE_NODES, isWall, wallLine } from '../data/buildings';
 import { buildingStats, canAfford, carryCapacity, gatherRate, pay, trainable, unitStats, type BuildingStats, type UnitStats } from '../data/stats';
 import { TECHS, techBlocker, techMods, techsAt, type TechId } from '../data/techs';
 import { UNITS } from '../data/units';
@@ -22,6 +22,8 @@ export interface Order {
   auto?: boolean;
   /** formation march: move no faster than this (tiles/s) */
   pace?: number;
+  /** order to go back to once this one is done (breaking through a wall on the way) */
+  resume?: Order;
 }
 
 export interface Entity {
@@ -123,6 +125,8 @@ export class World {
   occ: Int32Array;
   /** movement blocking */
   block: Uint8Array;
+  /** gate tiles: owner + 1 (open to that player and allies, blocked to everyone else) */
+  gate: Int16Array;
   entities = new Map<number, Entity>();
   players: SimPlayer[];
   tick = 0;
@@ -133,6 +137,9 @@ export class World {
   pf: Pathfinder;
   starts: Vec2[];
   private hash = new Map<number, Entity[]>();
+  /** whose path is being planned, and whether it may go through enemy walls */
+  private mover = -1;
+  private breaching = false;
   winner = -2; // -2 = running
   private multiPlayerStart: boolean;
 
@@ -143,8 +150,9 @@ export class World {
     const n = this.size * this.size;
     this.occ = new Int32Array(n);
     this.block = new Uint8Array(n);
+    this.gate = new Int16Array(n);
     for (let i = 0; i < n; i++) if (this.terrain[i] === Terrain.WATER) this.block[i] = 1;
-    this.pf = new Pathfinder(this.size, (x, y) => this.walkable(x, y));
+    this.pf = new Pathfinder(this.size, (x, y) => this.passable(x, y, this.mover), (x, y) => this.breakCost(x, y));
     this.players = players.map((p) => ({
       ...p,
       res: { ...START_RESOURCES },
@@ -182,6 +190,40 @@ export class World {
   }
   walkableAt(x: number, y: number) {
     return this.walkable(Math.floor(x), Math.floor(y));
+  }
+  /** walkable for a given player: their own and allied gates are open */
+  passable(x: number, y: number, owner: number) {
+    if (x < 0 || y < 0 || x >= this.size || y >= this.size) return false;
+    const i = y * this.size + x;
+    if (this.block[i] === 0) return true;
+    const g = this.gate[i];
+    return g !== 0 && owner >= 0 && !this.isEnemy(owner, g - 1);
+  }
+  passableAt(x: number, y: number, owner: number) {
+    return this.passable(Math.floor(x), Math.floor(y), owner);
+  }
+  /** an enemy wall or gate standing on this spot */
+  private enemyWallAt(x: number, y: number, owner: number): Entity | null {
+    if (!this.inBounds(x, y)) return null;
+    const e = this.entities.get(this.occ[y * this.size + x]);
+    return e && e.kind === 'building' && isWall(e.type) && this.isEnemy(owner, e.owner) ? e : null;
+  }
+  private breakCost(x: number, y: number): number {
+    if (!this.breaching) return 0;
+    const e = this.enemyWallAt(x, y, this.mover);
+    // the cost of a detour worth avoiding by smashing through instead
+    return e ? 10 + e.hp / 60 : 0;
+  }
+  /** soldiers attacking (not just walking) will batter through walls in their way */
+  private canBreach(u: Entity) {
+    return u.type !== 'villager' && (!!u.amove || (u.order?.type === 'attack' && !u.order.auto));
+  }
+
+  /** an own wall section that a gate placed here would replace */
+  wallToReplace(slot: number, type: BuildingType, tx: number, ty: number): Entity | null {
+    if (type !== 'gate' || !this.inBounds(tx, ty)) return null;
+    const e = this.entities.get(this.occ[ty * this.size + tx]);
+    return e && e.type === 'wall' && e.owner === slot ? e : null;
   }
 
   canPlace(type: BuildingType, tx: number, ty: number): boolean {
@@ -286,6 +328,7 @@ export class World {
         const i = y * this.size + x;
         this.occ[i] = e.id;
         if (bs.def.blocking) this.block[i] = 1;
+        if (type === 'gate') this.gate[i] = owner + 1;
       }
     return e;
   }
@@ -296,6 +339,7 @@ export class World {
         const i = y * this.size + x;
         if (this.occ[i] === e.id) {
           this.occ[i] = 0;
+          this.gate[i] = 0;
           if (this.terrain[i] !== Terrain.WATER) this.block[i] = 0;
         }
       }
@@ -375,16 +419,16 @@ export class World {
     return best;
   }
 
-  private nearestWalkable(x: number, y: number, maxR = 6): Vec2 | null {
+  private nearestWalkable(x: number, y: number, maxR = 6, owner = -1): Vec2 | null {
     const tx = Math.floor(x), ty = Math.floor(y);
-    if (this.walkable(tx, ty)) return { x, y };
+    if (this.passable(tx, ty, owner)) return { x, y };
     for (let r = 1; r <= maxR; r++) {
       let best: Vec2 | null = null;
       let bd = Infinity;
       for (let dy = -r; dy <= r; dy++)
         for (let dx = -r; dx <= r; dx++) {
           if (Math.max(Math.abs(dx), Math.abs(dy)) !== r) continue;
-          if (!this.walkable(tx + dx, ty + dy)) continue;
+          if (!this.passable(tx + dx, ty + dy, owner)) continue;
           const cx = tx + dx + 0.5, cy = ty + dy + 0.5;
           const d = (cx - x) ** 2 + (cy - y) ** 2;
           if (d < bd) {
@@ -401,13 +445,13 @@ export class World {
   // movement
   // -------------------------------------------------------------------------
   private pathToPoint(u: Entity, x: number, y: number): boolean {
-    const goal = this.nearestWalkable(x, y);
+    const goal = this.nearestWalkable(x, y, 6, u.owner);
     if (!goal) {
       u.path = [];
       return false;
     }
     const gx = Math.floor(goal.x), gy = Math.floor(goal.y);
-    const r = this.pf.find(Math.floor(u.x), Math.floor(u.y), gx, gy, gx, gy);
+    const r = this.find(u, gx, gy, gx, gy);
     u.path = r.path;
     u.pathIdx = 0;
     if (r.reached) {
@@ -429,10 +473,32 @@ export class World {
       x1 = t.tx + t.size - 1;
       y1 = t.ty + t.size - 1;
     }
-    const r = this.pf.find(Math.floor(u.x), Math.floor(u.y), x0 - ex, y0 - ex, x1 + ex, y1 + ex);
+    const r = this.find(u, x0 - ex, y0 - ex, x1 + ex, y1 + ex);
     u.path = r.path;
     u.pathIdx = 0;
     return r.reached;
+  }
+
+  private find(u: Entity, x0: number, y0: number, x1: number, y1: number) {
+    this.mover = u.owner;
+    this.breaching = this.canBreach(u);
+    const r = this.pf.find(Math.floor(u.x), Math.floor(u.y), x0, y0, x1, y1);
+    this.mover = -1;
+    this.breaching = false;
+    return r;
+  }
+
+  /** an enemy wall blocks the way: knock it down, then carry on */
+  private breach(u: Entity, wall: Entity) {
+    if (u.amove) {
+      this.orderAttack(u, wall, true);
+      return;
+    }
+    const prev = u.order!;
+    u.order = { type: 'attack', x: wall.x, y: wall.y, target: wall.id, auto: false, resume: prev.resume ?? prev };
+    u.path = null;
+    u.fails = 0;
+    u.repath = 0;
   }
 
   /** Advance along the path. Returns true when the path is finished. */
@@ -458,9 +524,11 @@ export class World {
         u.pathIdx++;
       } else {
         const nx = u.x + (dx / d) * step, ny = u.y + (dy / d) * step;
-        if (!this.walkableAt(nx, ny) && this.walkableAt(u.x, u.y)) {
-          // something was built in our way — re-plan
-          u.path = null;
+        if (!this.passableAt(nx, ny, u.owner) && this.passableAt(u.x, u.y, u.owner)) {
+          const wall = this.canBreach(u) ? this.enemyWallAt(Math.floor(nx), Math.floor(ny), u.owner) : null;
+          if (wall && (u.order?.type !== 'attack' || u.order.target !== wall.id)) this.breach(u, wall);
+          // otherwise something was built in our way — re-plan
+          else u.path = null;
           return false;
         }
         u.x = nx;
@@ -479,7 +547,7 @@ export class World {
     u.facing = Math.atan2(dy, dx);
     const step = Math.min(d, u.us!.speed / TICK_RATE);
     const nx = u.x + (dx / d) * step, ny = u.y + (dy / d) * step;
-    if (this.walkableAt(nx, ny)) {
+    if (this.passableAt(nx, ny, u.owner)) {
       u.x = nx;
       u.y = ny;
       u.anim = Anim.WALK;
@@ -568,11 +636,32 @@ export class World {
         const vills = ownUnits(cmd.ids).filter((u) => u.type === 'villager');
         if (!vills.length) return;
         const bs = buildingStats(p.civ, cmd.type, p.techs);
-        if (!bs || bs.def.age > p.age || !this.canPlace(cmd.type, cmd.tx | 0, cmd.ty | 0)) return;
+        if (!bs || bs.def.age > p.age) return;
+        const old = this.wallToReplace(slot, cmd.type, cmd.tx | 0, cmd.ty | 0);
+        if (!old && !this.canPlace(cmd.type, cmd.tx | 0, cmd.ty | 0)) return;
         if (!canAfford(p.res, bs.cost)) return;
         pay(p.res, bs.cost);
+        if (old) this.removeEntity(old);
         const b = this.placeBuilding(slot, cmd.type, cmd.tx | 0, cmd.ty | 0, false);
         for (const u of vills) this.orderBuild(u, b);
+        break;
+      }
+      case 'wall': {
+        const vills = ownUnits(cmd.ids).filter((u) => u.type === 'villager');
+        const bs = buildingStats(p.civ, 'wall', p.techs);
+        if (!vills.length || bs.def.age > p.age) return;
+        const placed: Entity[] = [];
+        for (const [x, y] of wallLine(cmd.ax | 0, cmd.ay | 0, cmd.bx | 0, cmd.by | 0)) {
+          if (!this.canPlace('wall', x, y)) continue; // existing walls, trees and buildings are skipped
+          if (!canAfford(p.res, bs.cost)) break;
+          pay(p.res, bs.cost);
+          placed.push(this.placeBuilding(slot, 'wall', x, y, false));
+        }
+        if (!placed.length) return;
+        // everyone starts at the end nearest the group and works along the line
+        const cx = vills.reduce((a, u) => a + u.x, 0) / vills.length, cy = vills.reduce((a, u) => a + u.y, 0) / vills.length;
+        const first = Math.hypot(placed[0].x - cx, placed[0].y - cy) <= Math.hypot(placed[placed.length - 1].x - cx, placed[placed.length - 1].y - cy) ? placed[0] : placed[placed.length - 1];
+        for (const u of vills) this.orderBuild(u, first);
         break;
       }
       case 'train': {
@@ -880,7 +969,8 @@ export class World {
     if (best || !includeBuildings) return best;
     bd = radius * radius;
     for (const e of this.entities.values()) {
-      if (e.kind !== 'building' || !this.isEnemy(owner, e.owner)) continue;
+      // walls are only attacked when ordered, or when they stand in the way
+      if (e.kind !== 'building' || isWall(e.type) || !this.isEnemy(owner, e.owner)) continue;
       const d = (e.x - x) ** 2 + (e.y - y) ** 2;
       if (d < bd && this.visibleTo(owner, e)) {
         bd = d;
@@ -893,6 +983,14 @@ export class World {
   private doAttack(u: Entity, o: Order) {
     const t = this.entities.get(o.target);
     if (!t || t.dead) {
+      if (o.resume) {
+        // the wall is down: back to what we were doing
+        u.order = o.resume;
+        u.path = null;
+        u.fails = 0;
+        u.repath = 0;
+        return;
+      }
       this.idle(u);
       if (u.type !== 'villager') this.autoAcquire(u);
       return;
@@ -1116,12 +1214,20 @@ export class World {
         this.orderGather(u, b);
         return;
       }
-      // help with another nearby foundation
+      // help with the nearest unfinished foundation (walls are built section by section this way)
+      let next: Entity | null = null;
+      let nd = 10;
       for (const e of this.entities.values()) {
-        if (e.kind === 'building' && e.owner === u.owner && !e.built && Math.hypot(e.x - u.x, e.y - u.y) < 10) {
-          this.orderBuild(u, e);
-          return;
+        if (e.kind !== 'building' || e.owner !== u.owner || e.built) continue;
+        const d = Math.hypot(e.x - u.x, e.y - u.y);
+        if (d < nd) {
+          nd = d;
+          next = e;
         }
+      }
+      if (next) {
+        this.orderBuild(u, next);
+        return;
       }
       // go back to a nearby resource if this was a dropoff
       if (b.bs!.def.dropoff.length && b.type !== 'town_center') {
@@ -1340,13 +1446,13 @@ export class World {
               else if (vm && !um) { wu = 0.75; wv = 0.25; }
               const ux = u.x - nx * overlap * wu * 2, uy = u.y - ny * overlap * wu * 2;
               const vx = v.x + nx * overlap * wv * 2, vy = v.y + ny * overlap * wv * 2;
-              if (this.walkableAt(ux, uy)) { u.x = ux; u.y = uy; }
-              if (this.walkableAt(vx, vy)) { v.x = vx; v.y = vy; }
+              if (this.passableAt(ux, uy, u.owner)) { u.x = ux; u.y = uy; }
+              if (this.passableAt(vx, vy, v.owner)) { v.x = vx; v.y = vy; }
             }
           }
         // pushed into a blocked tile (e.g. a building was placed on us)
-        if (!this.walkableAt(u.x, u.y)) {
-          const w = this.nearestWalkable(u.x, u.y, 8);
+        if (!this.passableAt(u.x, u.y, u.owner)) {
+          const w = this.nearestWalkable(u.x, u.y, 8, u.owner);
           if (w) {
             u.x = w.x;
             u.y = w.y;
@@ -1410,7 +1516,7 @@ export class World {
     const has = new Array(this.players.length).fill(false);
     for (const e of this.entities.values()) {
       if (e.owner < 0) continue;
-      if (e.kind === 'unit' || (e.kind === 'building' && e.type !== 'farm')) has[e.owner] = true;
+      if (e.kind === 'unit' || (e.kind === 'building' && e.type !== 'farm' && !isWall(e.type))) has[e.owner] = true;
     }
     for (const p of this.players) {
       if (p.alive && !has[p.slot]) {

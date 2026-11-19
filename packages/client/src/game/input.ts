@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { BUILDINGS, Terrain, type BuildingType, type UnitType, UNITS } from '@thrones/shared';
+import { BUILDINGS, Terrain, buildingStats, canAfford, wallLine, type BuildingType, type UnitType, UNITS } from '@thrones/shared';
 import type { Game } from './game';
 import type { CEnt } from './entities';
 import { buildBuilding } from '../render/models';
@@ -17,6 +17,13 @@ export class Input {
   private ghost: THREE.Group | null = null;
   private ghostOk = false;
   private ghostTile = new THREE.Vector2();
+  /** wall placement: the tile where the drag began, and preview blocks along the line */
+  private wallStart: { x: number; y: number } | null = null;
+  private wallGhosts: THREE.Mesh[] = [];
+  private wallGhostGeo = new THREE.BoxGeometry(0.8, 1.05, 0.8).translate(0, 0.52, 0);
+  private wallOk = new THREE.MeshBasicMaterial({ color: 0x66ff88, transparent: true, opacity: 0.45, depthWrite: false });
+  private wallBad = new THREE.MeshBasicMaterial({ color: 0xff4444, transparent: true, opacity: 0.45, depthWrite: false });
+  private wallSkip = new THREE.MeshBasicMaterial({ color: 0xbbbbbb, transparent: true, opacity: 0.25, depthWrite: false });
   private dragStart: { x: number; y: number } | null = null;
   private box: HTMLDivElement;
   private mouse = { x: 0, y: 0, inside: false };
@@ -273,6 +280,8 @@ export class Input {
   }
 
   cancelPlacing() {
+    this.wallStart = null;
+    this.showWallLine([]);
     if (this.ghost) {
       this.game.engine.scene.remove(this.ghost);
       this.ghost.traverse((o) => ((o as THREE.Mesh).material as THREE.Material | undefined)?.dispose?.());
@@ -294,12 +303,41 @@ export class Input {
       }
     for (const e of g.ents.values()) {
       if (e.kind !== 1) continue;
+      // a gate may replace one of your own wall sections
+      if (type === 'gate' && e.type === 'wall' && e.owner === g.you) continue;
       const s = BUILDINGS[e.type as BuildingType].size;
       const ex = Math.round(e.x - s / 2), ey = Math.round(e.y - s / 2);
       if (tx < ex + s && tx + size > ex && ty < ey + s && ty + size > ey) return false;
     }
     return true;
   }
+
+  /** show the planned wall: green sections are laid, grey ones already stand, red ones are blocked or unaffordable */
+  private showWallLine(tiles: [number, number][]) {
+    const g = this.game;
+    while (this.wallGhosts.length > tiles.length) g.engine.scene.remove(this.wallGhosts.pop()!);
+    while (this.wallGhosts.length < tiles.length) {
+      const m = new THREE.Mesh(this.wallGhostGeo, this.wallOk);
+      g.engine.scene.add(m);
+      this.wallGhosts.push(m);
+    }
+    const cost = buildingStats(g.civOf(g.you), 'wall').cost;
+    const left = { ...g.me.r };
+    let laid = 0;
+    tiles.forEach(([x, y], i) => {
+      const m = this.wallGhosts[i];
+      m.position.set(x + 0.5, g.terrain.groundAt(x + 0.5, y + 0.5), y + 0.5);
+      const own = g.walls.get(x + y * 4096)?.owner === g.you;
+      if (own) m.material = this.wallSkip;
+      else if (this.canPlaceClient('wall', x, y) && canAfford(left, cost)) {
+        for (const [k, v] of Object.entries(cost)) left[k as keyof typeof left] -= v ?? 0;
+        m.material = this.wallOk;
+        laid++;
+      } else m.material = this.wallBad;
+    });
+    this.wallLaid = laid;
+  }
+  private wallLaid = 0;
 
   private updateGhost() {
     if (!this.ghost || !this.placing) return;
@@ -308,6 +346,11 @@ export class Input {
     const size = BUILDINGS[this.placing].size;
     const tx = Math.round(gp.x - size / 2), ty = Math.round(gp.y - size / 2);
     this.ghostTile.set(tx, ty);
+    if (this.placing === 'wall') {
+      // the line preview replaces the single ghost while dragging
+      this.ghost.visible = !this.wallStart;
+      this.showWallLine(this.wallStart ? wallLine(this.wallStart.x, this.wallStart.y, tx, ty) : []);
+    }
     const cx = tx + size / 2, cy = ty + size / 2;
     this.ghost.position.set(cx, this.game.terrain.groundAt(cx, cy), cy);
     const ok = this.canPlaceClient(this.placing, tx, ty);
@@ -331,6 +374,12 @@ export class Input {
       return;
     }
     if (e.button === 0) {
+      if (this.placing === 'wall') {
+        this.updateGhost();
+        this.wallStart = { x: this.ghostTile.x, y: this.ghostTile.y };
+        this.updateGhost();
+        return;
+      }
       if (this.placing) {
         this.place(e.shiftKey);
         return;
@@ -373,6 +422,26 @@ export class Input {
     const s = BUILDINGS[this.placing].size;
     g.effects.dust(this.ghostTile.x + s / 2, this.ghostTile.y + s / 2, s * 0.4, 10);
     if (!keep) this.cancelPlacing();
+  }
+
+  private placeWall(keep: boolean) {
+    const g = this.game;
+    const a = this.wallStart!;
+    const b = { x: this.ghostTile.x, y: this.ghostTile.y };
+    this.wallStart = null;
+    const vills = this.ownUnits().filter((u) => u.type === 'villager');
+    const laid = this.wallLaid;
+    this.showWallLine([]);
+    if (!vills.length || !laid) {
+      sfx.error();
+      if (this.ghost) this.ghost.visible = true;
+      return;
+    }
+    g.link.send({ c: 'wall', ids: vills.map((v) => v.id), ax: a.x, ay: a.y, bx: b.x, by: b.y });
+    sfx.place();
+    for (const [x, y] of wallLine(a.x, a.y, b.x, b.y)) if ((x + y) % 3 === 0) g.effects.dust(x + 0.5, y + 0.5, 0.4, 4);
+    if (!keep) this.cancelPlacing();
+    else if (this.ghost) this.ghost.visible = true;
   }
 
   /** plain move order (ignores what is under the cursor) */
@@ -481,6 +550,10 @@ export class Input {
   private up(e: MouseEvent) {
     if (e.button === 1) {
       this.middleDrag = null;
+      return;
+    }
+    if (e.button === 0 && this.placing === 'wall' && this.wallStart) {
+      this.placeWall(e.shiftKey);
       return;
     }
     if (e.button !== 0 || !this.dragStart) return;

@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { BUILD_MENU, CIVS, PLAYER_COLORS, UNITS, type CivId, type UnitType } from '@thrones/shared';
+import { BUILD_MENU, BUILDINGS, CIVS, PLAYER_COLORS, UNITS, type CivId, type UnitType } from '@thrones/shared';
 import { Engine } from '../render/engine';
 import { FogOfWar } from '../render/fow';
 import { buildBuilding, buildUnit, type Rig } from '../render/models';
@@ -21,7 +21,7 @@ export function startGallery(stage: HTMLElement, civ: CivId, view: string) {
   let x = 20;
   for (const t of types) {
     const b = buildBuilding(t, civ, pc);
-    const s = t === 'town_center' ? 4 : t === 'house' || t === 'storehouse' || t === 'tower' ? 2 : 3;
+    const s = BUILDINGS[t].size;
     x += s / 2 + 0.6;
     b.position.set(x, 0, 30);
     engine.scene.add(b);

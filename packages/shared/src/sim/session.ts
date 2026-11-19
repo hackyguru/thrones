@@ -167,6 +167,7 @@ export class GameSession {
       if (pl && e.kind === 'unit') e.us = unitStats(pl.civ, e.type as never, TICK_RATE, pl.techs);
       if (pl && e.kind === 'building') e.bs = buildingStats(pl.civ, e.type as never, pl.techs);
       w.entities.set(e.id, e);
+      if (e.type === 'gate' && e.kind === 'building') w.gate[e.ty * w.size + e.tx] = e.owner + 1;
     }
     w.projectiles = d.projectiles;
     w.events = [];

@@ -31,7 +31,9 @@ export type BuildingType =
   | 'archery_range'
   | 'stable'
   | 'blacksmith'
-  | 'tower';
+  | 'tower'
+  | 'wall'
+  | 'gate';
 
 export type ResourceNodeType = 'tree' | 'palm' | 'gold_mine' | 'stone_mine' | 'berry_bush';
 
@@ -62,6 +64,8 @@ export type Command =
   | { c: 'stance'; ids: number[]; s: Stance }
   | { c: 'attack'; ids: number[]; target: number }
   | { c: 'build'; ids: number[]; type: BuildingType; tx: number; ty: number }
+  /** lay a line of wall foundations between two tiles */
+  | { c: 'wall'; ids: number[]; ax: number; ay: number; bx: number; by: number }
   | { c: 'train'; building: number; type: UnitType }
   | { c: 'research'; building: number; tech: string }
   | { c: 'cancel'; building: number; index: number }

@@ -782,6 +782,9 @@ export function buildBuilding(type: BuildingType, civ: CivId, pc: number): THREE
       flag(g, pc, 1.3, top, 1.3, 1.4, 1.2);
       break;
     }
+    case 'wall':
+    case 'gate':
+      return buildWall(type, civ, pc, type === 'gate' ? 1 | 4 : 0);
     case 'tower': {
       const top = plinth(g, S, 1.8, 1.8, 0.12, 2);
       const round = S.key !== 'dravidian' && S.key !== 'vijayanagara';
@@ -817,6 +820,88 @@ export function buildBuilding(type: BuildingType, civ: CivId, pc: number): THREE
     const m = o as THREE.Mesh;
     if (m.isMesh && m.castShadow !== false) m.castShadow = true;
   });
+  return g;
+}
+
+/** wall links: which neighbouring tiles hold a wall or gate of the same owner */
+export const LINK_E = 1, LINK_S = 2, LINK_W = 4, LINK_N = 8;
+const WALL_H = 1.05, WALL_T = 0.44;
+
+/** one row of merlons (or a plain coping) along a stretch of wall top */
+function merlons(g: THREE.Object3D, S: Style, len: number, axis: 'x' | 'z', cx: number, cz: number, y: number, thick: number) {
+  add(g, axis === 'x' ? G.box(len, 0.06, thick + 0.05) : G.box(thick + 0.05, 0.06, len), S.trim, cx, y + 0.03, cz);
+  if (S.parapet === 'none') return;
+  const size = 0.14;
+  const geo = S.parapet === 'kangura' ? G.kangura(size) : G.box(size, size * 1.1, size * 0.55);
+  const yy = S.parapet === 'kangura' ? y + 0.06 : y + 0.06 + size * 0.55;
+  const n = Math.max(1, Math.round(len / 0.25));
+  for (let i = 0; i < n; i++) {
+    const t = -len / 2 + (i + 0.5) * (len / n);
+    for (const side of [-1, 1]) {
+      const off = side * (thick / 2 - 0.05);
+      const m = add(g, geo, S.wall, axis === 'x' ? cx + t : cx + off, yy, axis === 'x' ? cz + off : cz + t);
+      if (axis === 'z') m.rotation.y = Math.PI / 2;
+    }
+  }
+}
+
+/**
+ * A wall section or gate. Sections join up with their neighbours (mask of LINK_* bits): straight
+ * runs read as one continuous curtain wall, with a squat bastion post at corners and ends.
+ */
+export function buildWall(type: 'wall' | 'gate', civ: CivId, pc: number, mask: number): THREE.Group {
+  const S = styleOf(civ);
+  const g = new THREE.Group();
+  if (type === 'gate') {
+    // built along x (wall continues east-west, passage runs north-south); turned if the wall runs the other way
+    const body = new THREE.Group();
+    g.add(body);
+    if (mask & (LINK_N | LINK_S) && !(mask & (LINK_E | LINK_W))) body.rotation.y = Math.PI / 2;
+    const H = 1.5;
+    add(body, G.box(1.04, 0.12, 0.66), S.plinth, 0, 0.06, 0);
+    add(body, G.archWall(1.0, H, 0.56, 1, 0.5, 1.02, S.arch), S.wall, 0, 0.1, 0);
+    add(body, G.box(1.06, 0.07, 0.62), S.trim, 0, 0.1 + H * 0.74, 0);
+    merlons(body, S, 1.0, 'x', 0, 0, 0.1 + H, 0.56);
+    // the two door leaves, hinged at the jambs
+    for (const side of [-1, 1]) {
+      const hinge = pivot(body, side * 0.25, 0.1, 0);
+      hinge.name = side < 0 ? 'doorL' : 'doorR';
+      const leaf = add(hinge, G.box(0.25, 0.86, 0.05), darkWood(), -side * 0.125, 0.43, 0);
+      for (const yy of [0.2, 0.45, 0.7]) add(hinge, G.box(0.25, 0.03, 0.06), steel(), -side * 0.125, yy, 0);
+      // spikes against elephants
+      for (const yy of [0.32, 0.58]) for (const k of [0.06, 0.18]) add(hinge, G.cone(0.018, 0.06, 6), steel(), -side * k, yy, 0.05).rotation.x = Math.PI / 2;
+      leaf.castShadow = true;
+    }
+    for (const side of [-1, 1]) add(body, G.box(0.06, 0.06, 0.06), S.accent, side * 0.42, 0.1 + H + 0.25, 0);
+    flag(body, pc, 0.4, 0.1 + H, 0.2, 0.7, 0.8);
+    return g;
+  }
+  const H = WALL_H, T = WALL_T;
+  const e = mask & LINK_E, w = mask & LINK_W, so = mask & LINK_S, n = mask & LINK_N;
+  const straight = (e && w && !so && !n) || (so && n && !e && !w);
+  // half-runs from the centre to each linked edge (starting a little behind the centre so they meet cleanly)
+  for (const [bit, dx, dz] of [[LINK_E, 1, 0], [LINK_W, -1, 0], [LINK_S, 0, 1], [LINK_N, 0, -1]] as const) {
+    if (!(mask & bit)) continue;
+    const len = 0.5 + T / 2;
+    const c = 0.5 - len / 2; // centre of the run along its axis
+    const x = dx * c, z = dz * c;
+    const axis = dx ? 'x' : 'z';
+    add(g, axis === 'x' ? G.box(len + 0.06, 0.12, T + 0.1) : G.box(T + 0.1, 0.12, len + 0.06), S.plinth, x, 0.06, z);
+    add(g, axis === 'x' ? G.box(len, H, T) : G.box(T, H, len), S.wall, x, H / 2, z);
+    merlons(g, S, len, axis, x, z, H, T);
+  }
+  if (!straight) {
+    // bastion post at an end, corner or junction
+    const P = 0.62, PH = H + 0.28;
+    add(g, G.box(P + 0.1, 0.14, P + 0.1), S.plinth, 0, 0.07, 0);
+    add(g, G.box(P, PH, P), S.wall, 0, PH / 2, 0);
+    add(g, G.box(P + 0.06, 0.07, P + 0.06), S.trim, 0, PH + 0.035, 0);
+    if (S.parapet !== 'none') {
+      for (const [x, z] of [[-1, -1], [1, -1], [-1, 1], [1, 1]]) add(g, S.parapet === 'kangura' ? G.kangura(0.15) : G.box(0.15, 0.17, 0.15), S.wall, x * (P / 2 - 0.08), PH + 0.07, z * (P / 2 - 0.08));
+    } else {
+      add(g, G.box(0.3, 0.12, 0.3), S.trim, 0, PH + 0.13, 0);
+    }
+  }
   return g;
 }
 

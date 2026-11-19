@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import {
-  AGES, BUILD_MENU, BUILDINGS, CIVS, PLAYER_COLORS, RESOURCE_NODES, TECHS, TICK_RATE, Terrain, UNITS, buildingStats, canAfford, techBlocker, techsAt, trainable, unitStats, type Age, type TechId,
+  AGES, BUILD_PAGES, BUILDINGS, CIVS, PLAYER_COLORS, RESOURCE_NODES, TECHS, TICK_RATE, Terrain, UNITS, buildingStats, canAfford, techBlocker, techsAt, trainable, unitStats, type Age, type TechId,
   type BuildingType, type Cost, type GameEvent, type GameOverInfo, type UnitType,
 } from '@thrones/shared';
 import type { Game } from '../game/game';
@@ -51,6 +51,8 @@ export class Hud {
   private miniTimer = 0;
   private uiTimer = 0;
   private cardSig = '';
+  /** villager build menu page: 0 economic, 1 military */
+  private buildPage = 0;
   private buttons: CmdButton[] = [];
   private pings: { x: number; y: number; t: number }[] = [];
   lastAlert: { x: number; y: number } | null = null;
@@ -252,6 +254,7 @@ export class Hud {
     game.link.onChat = (from, text, color) => this.chat(from, text, color);
     input.onSelectionChange = () => {
       this.cardSig = '';
+      this.buildPage = 0;
       this.renderSelection();
     };
     this.buildMinimapBase();
@@ -467,7 +470,17 @@ export class Hud {
       const moveBtn: CmdButton = { key: 'X', icon: ICONS.boot, title: 'Move', desc: 'Click where the selected units should go (M).', action: () => this.input.arm('move') };
       if (units.some((u) => u.type === 'villager')) {
         out.push(moveBtn);
-        BUILD_MENU.forEach((t, i) => {
+        const page = BUILD_PAGES[this.buildPage];
+        const other = BUILD_PAGES[1 - this.buildPage];
+        const flip = () => {
+          this.buildPage = 1 - this.buildPage;
+          this.renderSelection();
+        };
+        out.push({
+          key: this.buildPage === 0 ? 'A' : 'F', icon: this.buildPage === 0 ? ICONS.shield : ICONS.plough, title: `${other.name} buildings…`,
+          desc: other.types.map((t) => BUILDINGS[t].name).join(', '), action: flip,
+        });
+        page.types.forEach((t, i) => {
           const bs = buildingStats(civ, t);
           const locked = bs.def.age > myAge;
           out.push({

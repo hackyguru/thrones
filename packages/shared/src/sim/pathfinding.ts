@@ -21,6 +21,8 @@ export class Pathfinder {
   constructor(
     public size: number,
     public walkable: (x: number, y: number) => boolean,
+    /** extra cost of crossing a blocked tile that can be broken through (0 = impassable) */
+    public breakCost: (x: number, y: number) => number = () => 0,
   ) {
     const n = size * size;
     this.g = new Float32Array(n);
@@ -85,11 +87,17 @@ export class Pathfinder {
           if (!dx && !dy) continue;
           const nx = cx + dx, ny = cy + dy;
           if (nx < 0 || ny < 0 || nx >= size || ny >= size) continue;
-          if (!this.walkable(nx, ny)) continue;
+          let extra = 0;
+          if (!this.walkable(nx, ny)) {
+            // only straight steps through a breakable tile, so the unit hits it head-on
+            if (dx && dy) continue;
+            extra = this.breakCost(nx, ny);
+            if (extra <= 0) continue;
+          }
           if (dx && dy && (!this.walkable(cx + dx, cy) || !this.walkable(cx, cy + dy))) continue;
           const ni = ny * size + nx;
           if (this.state[ni] === CLOSED) continue;
-          const ng = this.g[cur] + (dx && dy ? SQRT2 : 1);
+          const ng = this.g[cur] + (dx && dy ? SQRT2 : 1) + extra;
           if (this.state[ni] === OPEN && ng >= this.g[ni]) continue;
           this.g[ni] = ng;
           this.f[ni] = ng + h(nx, ny) * 1.001;

@@ -67,6 +67,7 @@ export function controlRows(): [string, string][] {
     ['Move / attack / gather / build', `${orderVerb(true)} the ground, an enemy, a resource or a foundation`],
     ['Move (from the command card)', 'M, then click where to go'],
     ['Attack-move', 'A, then click an enemy or the ground (fights everything on the way)'],
+    ['Lay a wall', 'Pick Stone Wall, then click and drag along the line'],
     ['Stance: aggressive · defensive · hold ground', 'S · D · F with soldiers selected'],
     ['Set a building’s rally point', K.right],
     ['Deselect', oc === 'right' ? 'Esc · click empty ground' : 'Esc'],

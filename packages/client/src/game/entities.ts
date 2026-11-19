@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { Anim, BUILDINGS, UNITS, type BuildingType, type CivId, type EntSnap, type ResourceType, type UnitType } from '@thrones/shared';
-import { buildBuilding, buildScaffold, buildUnit, type Rig } from '../render/models';
+import { buildBuilding, buildScaffold, buildUnit, buildWall, type Rig } from '../render/models';
 import { clipDuration, holdLegs, play, type HumanRig } from '../render/characters';
 import { sfx } from '../audio/sfx';
 import { mountClipDuration, playMount } from '../render/mounts';
@@ -408,8 +408,14 @@ export class BuildingView {
   crops: THREE.Object3D | null;
   size: number;
   height: number;
+  /** walls and gates: which neighbours this piece joins (-1 = not yet linked) */
+  wallMask = -1;
+  /** gates: 0 shut .. 1 open, and where it is heading */
+  private doors: THREE.Object3D[] = [];
+  private doorAmt = 0;
+  doorOpen = false;
 
-  constructor(public ent: CEnt, civ: CivId, pc: number, ringColor: number, terrain: TerrainView) {
+  constructor(public ent: CEnt, private civ: CivId, private pc: number, ringColor: number, terrain: TerrainView) {
     const def = BUILDINGS[ent.type as BuildingType];
     this.size = def.size;
     this.model = buildBuilding(ent.type as BuildingType, civ, pc);
@@ -423,19 +429,46 @@ export class BuildingView {
       if (o.userData.flag) this.flags.push(o);
     });
     this.crops = this.model.getObjectByName('crops') ?? null;
+    this.findDoors();
     this.ring = new THREE.Mesh(ringGeo, ringMat(ringColor));
     this.ring.scale.setScalar(def.size * 0.72);
     this.ring.position.y = 0.08;
     this.ring.visible = false;
     this.root.add(this.ring);
-    this.height = ent.type === 'tower' ? 3.6 : ent.type === 'town_center' ? 3.8 : ent.type === 'farm' ? 0.6 : 2.0;
+    this.height = ent.type === 'tower' ? 3.6 : ent.type === 'town_center' ? 3.8 : ent.type === 'farm' ? 0.6 : ent.type === 'wall' ? 1.7 : 2.0;
     this.bar = new HpBar(Math.min(2.4, def.size * 0.6));
     this.bar.group.position.y = this.height;
     this.root.add(this.bar.group);
   }
 
+  private findDoors() {
+    this.doors = ['doorL', 'doorR'].map((n) => this.model.getObjectByName(n)).filter((o): o is THREE.Object3D => !!o);
+  }
+
+  /** rebuild a wall or gate so it joins its neighbours */
+  setWallMask(mask: number) {
+    if (mask === this.wallMask) return;
+    this.wallMask = mask;
+    const next = buildWall(this.ent.type as 'wall' | 'gate', this.civ, this.pc, mask);
+    next.scale.copy(this.model.scale);
+    next.position.copy(this.model.position);
+    this.root.remove(this.model);
+    this.root.add(next);
+    this.model = next;
+    this.flags = [];
+    next.traverse((o) => {
+      if (o.userData.flag) this.flags.push(o);
+    });
+    this.findDoors();
+  }
+
   update(dt: number, cam: THREE.Camera, time: number, now: number) {
     const e = this.ent;
+    if (this.doors.length) {
+      this.doorAmt += ((this.doorOpen ? 1 : 0) - this.doorAmt) * Math.min(1, dt * 6);
+      this.doors[0].rotation.y = this.doorAmt * 1.5;
+      if (this.doors[1]) this.doors[1].rotation.y = -this.doorAmt * 1.5;
+    }
     if (e.dying >= 0) {
       e.dying += dt;
       this.model.position.y = -e.dying * 1.4;

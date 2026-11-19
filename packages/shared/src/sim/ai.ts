@@ -644,8 +644,8 @@ export class AIController {
     let best: Entity | null = null;
     let bd = Infinity;
     for (const e of this.w.entities.values()) {
-      if (e.kind !== 'building' || !this.w.isEnemy(this.slot, e.owner)) continue;
-      // prefer production and town centers, avoid farms and walls of houses
+      if (e.kind !== 'building' || e.type === 'wall' || e.type === 'gate' || !this.w.isEnemy(this.slot, e.owner)) continue;
+      // walls are broken through on the way, never the goal; prefer production and town centers, avoid farms and walls of houses
       const weight = e.type === 'farm' ? 30 : e.type === 'house' ? 8 : e.type === 'tower' ? 6 : 0;
       const d = Math.hypot(e.x - from.x, e.y - from.y) + weight;
       if (d < bd) {

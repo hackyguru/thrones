@@ -83,11 +83,47 @@ export const BUILDINGS: Record<BuildingType, BuildingDef> = {
     attack: { damage: 6, range: 7, cooldown: 2 }, armor: { melee: 2, pierce: 7 }, blocking: true,
     hotkey: 'T', description: 'Defensive tower that fires arrows at nearby enemies.',
   },
+  wall: {
+    type: 'wall', age: 2, name: 'Stone Wall', native: 'Prakara', size: 1, hp: 700,
+    cost: { stone: 5 }, buildTime: 5, los: 2, pop: 0, dropoff: [], trains: [],
+    armor: { melee: 3, pierce: 10 }, blocking: true,
+    hotkey: 'S', description: 'Drag to lay a line of wall (5 stone a section). Arrows barely scratch it; enemies must batter through or go around.',
+  },
+  gate: {
+    type: 'gate', age: 2, name: 'Gate', native: 'Dvara', size: 1, hp: 1000,
+    cost: { stone: 30 }, buildTime: 15, los: 3, pop: 0, dropoff: [], trains: [],
+    armor: { melee: 3, pierce: 10 }, blocking: true,
+    hotkey: 'D', description: 'Opens for your own units and stays shut to enemies. Place it on one of your wall sections to replace it.',
+  },
 };
 
-export const BUILD_MENU: BuildingType[] = [
-  'house', 'storehouse', 'farm', 'town_center', 'barracks', 'archery_range', 'stable', 'blacksmith', 'tower',
+/** buildings that join up into fortifications */
+export function isWall(type: string): boolean {
+  return type === 'wall' || type === 'gate';
+}
+
+/** Tiles of a wall from (ax,ay) to (bx,by), joined edge to edge so nothing slips through a corner. */
+export function wallLine(ax: number, ay: number, bx: number, by: number, max = 60): [number, number][] {
+  const out: [number, number][] = [[ax, ay]];
+  const dx = Math.abs(bx - ax), dy = Math.abs(by - ay);
+  const sx = Math.sign(bx - ax), sy = Math.sign(by - ay);
+  let ix = 0, iy = 0;
+  while ((ix < dx || iy < dy) && out.length < max) {
+    // step along whichever axis lags behind the straight line
+    if (iy >= dy || (ix < dx && (ix + 0.5) * dy < (iy + 0.5) * dx)) ix++;
+    else iy++;
+    out.push([ax + sx * ix, ay + sy * iy]);
+  }
+  return out;
+}
+
+/** the villager's build menu, as two pages */
+export const BUILD_PAGES: { name: string; types: BuildingType[] }[] = [
+  { name: 'Economic', types: ['house', 'storehouse', 'farm', 'town_center'] },
+  { name: 'Military', types: ['barracks', 'archery_range', 'stable', 'blacksmith', 'tower', 'wall', 'gate'] },
 ];
+
+export const BUILD_MENU: BuildingType[] = BUILD_PAGES.flatMap((p) => p.types);
 
 export interface ResourceNodeDef {
   type: ResourceNodeType;

@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import {
-  BUILDINGS, PLAYER_COLORS, SNAPSHOT_EVERY, TICK_MS, unitStats,
+  BUILDINGS, PLAYER_COLORS, SNAPSHOT_EVERY, TICK_MS, isWall, unitStats,
   type BuildingType, type CivId, type GameEvent, type GameInit, type PlayerSnap, type Snapshot, type UnitType,
 } from '@thrones/shared';
 import { Engine } from '../render/engine';
@@ -9,6 +9,7 @@ import { TerrainView } from '../render/terrain';
 import { ResourcesView } from '../render/resources';
 import { Effects } from '../render/effects';
 import { RtsCamera } from './camera';
+import { LINK_E, LINK_N, LINK_S, LINK_W } from '../render/models';
 import { applySnap, BuildingView, UnitView, type CEnt } from './entities';
 import type { GameLink } from '../net/connection';
 
@@ -29,6 +30,8 @@ export class Game {
   camera: RtsCamera;
   ents = new Map<number, CEnt>();
   dying: { e: CEnt; until: number }[] = [];
+  /** wall and gate pieces by tile, so neighbours can join up */
+  walls = new Map<number, CEnt>();
   me: PlayerSnap = { r: { food: 0, wood: 0, gold: 0, stone: 0 }, pop: 0, cap: 0 };
   alive: boolean[] = [];
   /** age of every player */
@@ -107,13 +110,44 @@ export class Game {
     e.x = e.px = e.nx;
     e.y = e.py = e.ny;
     e.facing = e.nf;
+    if (s.k === 1 && isWall(s.t)) {
+      this.walls.set(this.tileKey(e), e);
+      this.relinkAround(e);
+    }
     return e;
+  }
+
+  private tileKey(e: CEnt) {
+    return Math.floor(e.x) + Math.floor(e.y) * 4096;
+  }
+
+  /** join a wall piece and its four neighbours up again */
+  private relinkAround(e: CEnt) {
+    const tx = Math.floor(e.x), ty = Math.floor(e.y);
+    for (const [dx, dy] of [[0, 0], [1, 0], [-1, 0], [0, 1], [0, -1]]) {
+      const w = this.walls.get(tx + dx + (ty + dy) * 4096);
+      if (!w || !(w.view instanceof BuildingView)) continue;
+      const at = (ox: number, oy: number) => {
+        const o = this.walls.get(tx + dx + ox + (ty + dy + oy) * 4096);
+        return !!o && o.owner === w.owner;
+      };
+      w.view.setWallMask((at(1, 0) ? LINK_E : 0) | (at(0, 1) ? LINK_S : 0) | (at(-1, 0) ? LINK_W : 0) | (at(0, -1) ? LINK_N : 0));
+    }
+  }
+
+  private forgetWall(e: CEnt) {
+    if (e.kind !== 1 || !isWall(e.type)) return;
+    const k = this.tileKey(e);
+    if (this.walls.get(k) !== e) return;
+    this.walls.delete(k);
+    this.relinkAround(e);
   }
 
   private remove(e: CEnt) {
     this.ents.delete(e.id);
     this.selection.delete(e.id);
     this.worldGroup.remove(e.view.root);
+    this.forgetWall(e);
   }
 
   private soundV = new THREE.Vector3();
@@ -184,6 +218,7 @@ export class Game {
         if (e) {
           this.ents.delete(e.id);
           this.selection.delete(e.id);
+          this.forgetWall(e);
           e.dying = 0;
           e.selected = false;
           this.dying.push({ e, until: this.time + (e.kind === 0 ? 4 : 1.6) });
@@ -198,6 +233,23 @@ export class Game {
       }
     }
     this.listeners.onEvent?.(ev);
+  }
+
+  /** gates swing open while their owner's units are passing */
+  private updateGates() {
+    const gates: CEnt[] = [];
+    for (const w of this.walls.values()) if (w.type === 'gate' && w.view instanceof BuildingView) gates.push(w);
+    if (!gates.length) return;
+    for (const gt of gates) {
+      let open = false;
+      for (const e of this.ents.values()) {
+        if (e.kind === 0 && e.owner === gt.owner && Math.abs(e.x - gt.x) < 1.6 && Math.abs(e.y - gt.y) < 1.6) {
+          open = true;
+          break;
+        }
+      }
+      (gt.view as BuildingView).doorOpen = open;
+    }
   }
 
   private computeVisibility() {
@@ -232,6 +284,7 @@ export class Game {
     if (this.visTimer <= 0) {
       this.visTimer = 0.2;
       this.computeVisibility();
+      this.updateGates();
     }
     this.fow.animate(dt);
     const cam = this.engine.camera;

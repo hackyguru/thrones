@@ -114,6 +114,7 @@ export class App {
         <p><b>Army:</b> Barracks train infantry, the Archery Range archers, the Stable cavalry and war elephants. Spearmen counter cavalry and elephants, archers shred infantry, cavalry runs down archers. Each civilization has a unique unit.</p>
         <p><b>Ages:</b> you begin in the <i>Janapada Age</i> with villagers, swordsmen and spearmen. Advance at your Durbar (400 food) to the <i>Rajya Age</i> for archers, cavalry, towers and the Blacksmith, then (700 food, 250 gold) to the <i>Samrajya Age</i> for war elephants, your unique unit and the strongest upgrades. Storehouses and the Durbar research faster gathering; the Blacksmith forges better weapons and armour. Locked buttons show what they need.</p>
         <p><b>Battle orders:</b> A then click the ground to attack-move. S / D / F set stance: aggressive, defensive (returns to post), hold ground (never moves). Groups march in formation at the pace of their slowest unit.</p>
+        <p><b>Walls:</b> in the Rajya Age, open a villager's <i>Military buildings</i> page, pick Stone Wall and drag a line (5 stone a section). Put a Gate on one of your wall sections: it opens for your troops and stays shut to enemies. Enemy soldiers on an attack will batter through, so back walls with towers and spearmen.</p>
         ${controlsTable()}
       </div>
       <button class="btn" data-back>Back</button></div></div>`);
