@@ -1,9 +1,9 @@
-import { CIVS, CIV_IDS, PLAYER_COLORS, type CivId, type GameInit, type PlayerInfo, type RoomState, type ServerMsg } from '@thrones/shared';
+import { CIVS, CIV_IDS, PLAYER_COLORS, TICK_RATE, type CivId, type GameInit, type PlayerInfo, type RoomState, type ServerMsg } from '@thrones/shared';
 import { Game } from './game/game';
 import { Input } from './game/input';
 import { Hud, escapeHtml } from './ui/hud';
 import { LocalLink, Net, NetLink, type GameLink } from './net/connection';
-import { readSave, saveMeta } from './net/saves';
+import { clearSave, readSave, saveMeta, writeSave, writeSaveNow, type SaveMeta } from './net/saves';
 import { civPicker, colorSwatches, el, hex, roomList, roomSlots, sounds } from './ui/screens';
 import { ICONS } from './ui/icons';
 import { controlsTable, orderVerb, settings } from './ui/settings';
@@ -48,6 +48,17 @@ export class App {
   }
 
   start() {
+    // a refresh mid-match drops the player straight back into it
+    let resume = false;
+    try {
+      resume = sessionStorage.getItem(PLAYING) === '1' && !!saveMeta();
+    } catch {
+      /* storage unavailable */
+    }
+    if (resume) {
+      void this.continueSave();
+      return;
+    }
     this.startBackdrop();
     this.showTitle();
   }
@@ -369,16 +380,31 @@ export class App {
 
   private async continueSave() {
     const json = await readSave();
-    if (!json) return;
+    const meta = saveMeta();
+    if (!json) {
+      if (!this.screen) {
+        this.startBackdrop();
+        this.showTitle();
+      }
+      return;
+    }
     let link: LocalLink;
     try {
       link = LocalLink.fromSave(json);
     } catch (err) {
       console.error(err);
       alert('This saved game could not be loaded.');
+      clearSave();
+      if (!this.screen) {
+        this.startBackdrop();
+        this.showTitle();
+      }
       return;
     }
-    this.startGame(link, () => link.start());
+    this.startGame(link, () => {
+      link.start();
+      if (meta?.cam) this.game?.camera.jumpTo(meta.cam[0], meta.cam[1]);
+    });
   }
 
   // ---------------------------------------------------------------------------
@@ -414,9 +440,18 @@ export class App {
           else sfx.death();
         }
       };
-      link.onGameOver = (info) => hud.showGameOver(info, () => this.endGame());
+      const local = !link.online && (link as unknown as { save?: () => string }).save ? (link as unknown as { save: () => string }) : null;
+      if (local) this.startAutosave(game, local);
+      link.onGameOver = (info) => {
+        if (local) {
+          this.stopAutosave();
+          clearSave();
+        }
+        hud.showGameOver(info, () => this.endGame());
+      };
       hud.onQuit = () => {
         if (link.online) link.resign();
+        if (local) this.autosave(true);
         this.endGame();
       };
       hud.message(`Long live the ${CIVS[game.civOf(game.you)].name}!`, 'good');
@@ -426,7 +461,60 @@ export class App {
     }, 60);
   }
 
+  // ---------------------------------------------------------------------------
+  // autosave: every 10 s, on tab hide and on page unload, so a refresh never loses the match
+  private autosaveTimer = 0;
+  private autosaveTarget: { game: Game; link: { save: () => string } } | null = null;
+  private onHide = () => {
+    if (document.visibilityState === 'hidden') this.autosave(true);
+  };
+  private onUnload = () => this.autosave(true);
+
+  private startAutosave(game: Game, link: { save: () => string }) {
+    this.autosaveTarget = { game, link };
+    try {
+      sessionStorage.setItem(PLAYING, '1');
+    } catch {
+      /* storage unavailable */
+    }
+    this.autosaveTimer = window.setInterval(() => this.autosave(false), 10000);
+    document.addEventListener('visibilitychange', this.onHide);
+    window.addEventListener('pagehide', this.onUnload);
+  }
+
+  private stopAutosave() {
+    clearInterval(this.autosaveTimer);
+    document.removeEventListener('visibilitychange', this.onHide);
+    window.removeEventListener('pagehide', this.onUnload);
+    this.autosaveTarget = null;
+    try {
+      sessionStorage.removeItem(PLAYING);
+    } catch {
+      /* storage unavailable */
+    }
+  }
+
+  private autosave(now: boolean) {
+    const t = this.autosaveTarget;
+    if (!t) return;
+    try {
+      const json = t.link.save();
+      const g = t.game;
+      const meta: SaveMeta = {
+        date: Date.now(),
+        civ: CIVS[g.civOf(g.you)].name,
+        minutes: Math.round(g.tick / TICK_RATE / 60),
+        cam: [Math.round(g.camera.target.x * 10) / 10, Math.round(g.camera.target.y * 10) / 10],
+      };
+      if (now) writeSaveNow(json, meta);
+      else void writeSave(json, meta).catch((err) => console.warn('autosave failed', err));
+    } catch (err) {
+      console.warn('autosave failed', err);
+    }
+  }
+
   private endGame() {
+    this.stopAutosave();
     sfx.listener = null;
     this.input?.dispose();
     this.hud?.dispose();
@@ -441,3 +529,5 @@ export class App {
     else this.showTitle();
   }
 }
+
+const PLAYING = 'thrones.playing';

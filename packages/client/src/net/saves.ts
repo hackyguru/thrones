@@ -1,10 +1,14 @@
 /** Single-player save slot in the browser: gzip-compressed match state in localStorage. */
 const KEY = 'thrones.save';
+/** uncompressed match JSON written on page unload (kept as its own item to avoid double escaping) */
+const RAW = 'thrones.save.raw';
 
 export interface SaveMeta {
   date: number;
   civ: string;
   minutes: number;
+  /** camera focus when saved */
+  cam?: [number, number];
 }
 
 async function gzip(text: string): Promise<string> {
@@ -26,6 +30,23 @@ async function gunzip(b64: string): Promise<string> {
 export async function writeSave(json: string, meta: SaveMeta): Promise<void> {
   const data = await gzip(json);
   localStorage.setItem(KEY, JSON.stringify({ meta, data }));
+  localStorage.removeItem(RAW);
+}
+
+/** Synchronous, uncompressed write for page unload, when async compression would not finish. */
+export function writeSaveNow(json: string, meta: SaveMeta): void {
+  // raw first: if it does not fit, the previous compressed save stays valid
+  localStorage.setItem(RAW, json);
+  localStorage.setItem(KEY, JSON.stringify({ meta, raw: true }));
+}
+
+export function clearSave(): void {
+  try {
+    localStorage.removeItem(KEY);
+    localStorage.removeItem(RAW);
+  } catch {
+    /* storage unavailable */
+  }
 }
 
 export function saveMeta(): SaveMeta | null {
@@ -40,7 +61,10 @@ export function saveMeta(): SaveMeta | null {
 export async function readSave(): Promise<string | null> {
   try {
     const raw = localStorage.getItem(KEY);
-    return raw ? await gunzip(JSON.parse(raw).data) : null;
+    if (!raw) return null;
+    const d = JSON.parse(raw) as { data?: string; raw?: boolean };
+    if (d.raw) return localStorage.getItem(RAW);
+    return d.data ? await gunzip(d.data) : null;
   } catch {
     return null;
   }
