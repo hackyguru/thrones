@@ -399,8 +399,10 @@ export class Input {
         g.effects.marker(t.e.x, t.e.y, 0xff4433);
         sfx.command('attack');
       } else if (attackOnly) {
-        g.link.send({ c: 'move', ids, x: gp.x, y: gp.y });
+        // attack-move: march there, fighting anything met on the way
+        g.link.send({ c: 'amove', ids, x: gp.x, y: gp.y });
         g.effects.marker(gp.x, gp.y, 0xff4433);
+        sfx.command('attack');
       } else {
         const target = t?.kind === 'ent' ? t.e.id : t?.kind === 'res' ? t.id : undefined;
         g.link.send({ c: 'smart', ids, x: gp.x, y: gp.y, target });

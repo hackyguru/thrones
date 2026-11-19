@@ -1,5 +1,5 @@
 import {
-  GameRunner, GameSession, type ClientMsg, type Command, type GameInit, type GameOverInfo, type PlayerInfo, type ServerMsg, type Snapshot,
+  GameRunner, GameSession, type ClientMsg, type Command, type Difficulty, type GameInit, type GameOverInfo, type PlayerInfo, type ServerMsg, type Snapshot,
 } from '@thrones/shared';
 
 /** What a running game needs from its transport. */
@@ -27,7 +27,7 @@ export class LocalLink implements GameLink {
   constructor(
     players: PlayerInfo[],
     public slot: number,
-    opts: { seed?: number; difficulty?: 'easy' | 'normal'; fastForwardSec?: number; session?: GameSession } = {},
+    opts: { seed?: number; difficulty?: Difficulty; fastForwardSec?: number; session?: GameSession } = {},
   ) {
     const seed = opts.seed ?? (Math.random() * 2 ** 31) | 0;
     this.runner = new GameRunner(

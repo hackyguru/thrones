@@ -18,6 +18,15 @@
 * { box-sizing: border-box; }
 html, body { margin: 0; height: 100%; overflow: hidden; background: #0e0b08; color: var(--ink); font-family: var(--f-body); user-select: none; -webkit-user-select: none; }
 #stage { position: fixed; inset: 0; }
+/* menus: no live world behind them, just a warm lamplit backdrop */
+#stage:empty {
+  background:
+    radial-gradient(ellipse 70% 55% at 50% 38%, rgba(196, 128, 52, 0.28), transparent 70%),
+    radial-gradient(ellipse 120% 90% at 50% 110%, rgba(90, 30, 14, 0.55), transparent 60%),
+    repeating-linear-gradient(45deg, rgba(226, 184, 90, 0.035) 0 2px, transparent 2px 22px),
+    repeating-linear-gradient(-45deg, rgba(226, 184, 90, 0.035) 0 2px, transparent 2px 22px),
+    #160f0a;
+}
 #ui { position: fixed; inset: 0; pointer-events: none; }
 #ui > * { pointer-events: auto; }
 #ui > .hud, #ui > .select-box { pointer-events: none; }
@@ -107,7 +116,8 @@ input { user-select: text; -webkit-user-select: text; }
 .setup { display: grid; grid-template-columns: 1.7fr 1fr; gap: 26px; }
 .setup-actions { display: flex; gap: 12px; margin-top: 18px; }
 .setup-actions .btn { margin: 0; }
-.seg { display: flex; gap: 6px; }
+.seg { display: flex; gap: 6px; flex-wrap: wrap; }
+.diff-desc { font-size: 12px; opacity: .75; margin: 6px 0 2px; min-height: 2.6em; }
 .slot-row { display: grid; grid-template-columns: 18px minmax(70px, 1fr) minmax(120px, 170px) 96px 30px; align-items: center; gap: 8px; padding: 8px 10px; margin-bottom: 6px; background: rgba(0,0,0,.25); border: 1px solid rgba(138,100,32,.4); border-radius: 4px; }
 .slot-row.mine { border-color: var(--gold); }
 .slot-name { font-family: var(--f-head); font-size: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -208,6 +218,7 @@ code { background: #000; padding: 1px 5px; border-radius: 3px; }
 .cmd img { width: 100%; height: 100%; object-fit: cover; }
 .cmd .ico { width: 30px; height: 30px; }
 .cmd:hover { border-color: var(--gold-hi); box-shadow: 0 0 10px rgba(226,184,90,.5); }
+.cmd.active { border-color: var(--gold-hi); box-shadow: inset 0 0 0 2px var(--gold-hi), 0 0 8px rgba(226,184,90,.45); }
 .cmd.disabled { filter: grayscale(0.85) brightness(0.6); }
 .cmd.empty { background: rgba(0,0,0,.25); border: 1px solid rgba(138,100,32,.25); border-radius: 5px; }
 .cmd kbd { position: absolute; top: 2px; left: 3px; font-size: 10px; font-family: var(--f-head); color: var(--gold-hi); text-shadow: 0 1px 2px #000, 0 0 3px #000; }

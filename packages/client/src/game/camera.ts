@@ -46,9 +46,8 @@ export class RtsCamera {
   }
 
   update(dt: number) {
-    if (this.cinematic) {
-      this.wantYaw += dt * 0.05;
-    } else {
+    // the title-screen backdrop holds a still view of the living town
+    if (!this.cinematic) {
       const sp = this.dist * 0.9 * dt;
       let dx = 0, dy = 0;
       if (this.keys.has('ArrowLeft')) dx -= 1;

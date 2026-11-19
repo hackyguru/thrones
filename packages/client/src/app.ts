@@ -1,4 +1,4 @@
-import { CIVS, CIV_IDS, PLAYER_COLORS, TICK_RATE, type CivId, type GameInit, type PlayerInfo, type RoomState, type ServerMsg } from '@thrones/shared';
+import { CIVS, CIV_IDS, PLAYER_COLORS, TICK_RATE, type CivId, type Difficulty, type GameInit, type PlayerInfo, type RoomState, type ServerMsg } from '@thrones/shared';
 import { Game } from './game/game';
 import { Input } from './game/input';
 import { Hud, escapeHtml } from './ui/hud';
@@ -29,7 +29,6 @@ const store = {
 const randomCiv = (): CivId => CIV_IDS[Math.floor(Math.random() * CIV_IDS.length)];
 
 export class App {
-  private backdrop: Game | null = null;
   private game: Game | null = null;
   private input: Input | null = null;
   private hud: Hud | null = null;
@@ -59,38 +58,10 @@ export class App {
       void this.continueSave();
       return;
     }
-    this.startBackdrop();
     this.showTitle();
   }
 
   // ---------------------------------------------------------------------------
-  private startBackdrop() {
-    if (this.backdrop) return;
-    const players: PlayerInfo[] = [
-      { slot: 0, name: 'A', civ: randomCiv(), color: Math.floor(Math.random() * 6), isAI: true },
-      { slot: 1, name: 'B', civ: randomCiv(), color: 1, isAI: true },
-    ];
-    if (players[1].color === players[0].color) players[1].color = (players[0].color + 1) % 6;
-    // dev aid: ?ff=600 fast-forwards the backdrop match (e.g. to watch battles)
-    const ff = Number(new URLSearchParams(location.search).get('ff')) || 300;
-    const link = new LocalLink(players, 0, { fastForwardSec: ff, seed: 4242 });
-    this.backdrop = new Game(this.stage, link, { spectator: true, cinematic: true });
-    if (import.meta.env.DEV) (window as unknown as { __game: Game }).__game = this.backdrop;
-    if (new URLSearchParams(location.search).has('ff')) {
-      // follow the first army we can find
-      const s = link.runner.session.world;
-      let tx = 0, ty = 0, n = 0;
-      for (const e of s.entities.values()) if (e.kind === 'unit' && e.type !== 'villager') { tx += e.x; ty += e.y; n++; }
-      if (n) this.backdrop.camera.jumpTo(tx / n, ty / n);
-    }
-    link.start();
-  }
-
-  private stopBackdrop() {
-    this.backdrop?.dispose();
-    this.backdrop = null;
-  }
-
   private show(node: HTMLElement) {
     this.screen?.remove();
     this.screen = node;
@@ -161,7 +132,8 @@ export class App {
   showSkirmish() {
     let myCiv = (store.get('civ', 'random') as CivId | 'random') || 'random';
     let myColor = Number(store.get('color', '0')) || 0;
-    let difficulty: 'easy' | 'normal' = (store.get('difficulty', 'normal') as 'easy' | 'normal') || 'normal';
+    let difficulty = (store.get('difficulty', 'normal') as Difficulty) || 'normal';
+    if (!DIFFS.some((d) => d.id === difficulty)) difficulty = 'normal';
     const ais: { civ: CivId | 'random' }[] = [{ civ: 'random' }];
     const s = el(`<div class="page"><div class="panel ornate page-panel">
       <h2>Skirmish</h2>
@@ -172,7 +144,8 @@ export class App {
           <h4>Opponents</h4><div class="ai-list"></div>
           <button class="btn small ghost" data-add>+ Add AI opponent</button>
           <h4>Difficulty</h4>
-          <div class="seg"><button class="btn small" data-diff="easy">Easy</button><button class="btn small" data-diff="normal">Normal</button></div>
+          <div class="seg">${DIFFS.map((d) => `<button class="btn small" data-diff="${d.id}">${d.name}</button>`).join('')}</div>
+          <div class="diff-desc"></div>
           <div class="setup-actions"><button class="btn ghost" data-back>Back</button><button class="btn primary" data-start>Begin Battle</button></div>
         </div>
       </div></div></div>`);
@@ -198,7 +171,10 @@ export class App {
           ${ais.length > 1 ? `<button class="btn small ghost" data-rm="${i}">✕</button>` : '<span></span>'}</div>`)
         .join('');
     };
-    const renderDiff = () => s.querySelectorAll('[data-diff]').forEach((b) => b.classList.toggle('active', b.getAttribute('data-diff') === difficulty));
+    const renderDiff = () => {
+      s.querySelectorAll('[data-diff]').forEach((b) => b.classList.toggle('active', b.getAttribute('data-diff') === difficulty));
+      (s.querySelector('.diff-desc') as HTMLElement).textContent = DIFFS.find((d) => d.id === difficulty)!.desc;
+    };
     list.addEventListener('change', (e) => {
       const t = e.target as HTMLSelectElement;
       if (t.dataset.ai) ais[Number(t.dataset.ai)].civ = t.value as CivId | 'random';
@@ -216,7 +192,7 @@ export class App {
       }
       const d = t.closest('[data-diff]');
       if (d) {
-        difficulty = d.getAttribute('data-diff') as 'easy' | 'normal';
+        difficulty = d.getAttribute('data-diff') as Difficulty;
         store.set('difficulty', difficulty);
         renderDiff();
       }
@@ -383,7 +359,6 @@ export class App {
     const meta = saveMeta();
     if (!json) {
       if (!this.screen) {
-        this.startBackdrop();
         this.showTitle();
       }
       return;
@@ -396,7 +371,6 @@ export class App {
       alert('This saved game could not be loaded.');
       clearSave();
       if (!this.screen) {
-        this.startBackdrop();
         this.showTitle();
       }
       return;
@@ -416,7 +390,6 @@ export class App {
     this.ui.appendChild(loading);
     // let the loading screen paint before heavy work
     setTimeout(() => {
-      this.stopBackdrop();
       const game = new Game(this.stage, link);
       if (import.meta.env.DEV) (window as unknown as { __game: Game }).__game = game;
       const input = new Input(game, this.ui);
@@ -523,7 +496,6 @@ export class App {
     this.hud = null;
     this.game = null;
     document.body.className = '';
-    this.startBackdrop();
     sfx.startDrone();
     if (this.net && this.room) this.showRoom();
     else this.showTitle();
@@ -531,3 +503,10 @@ export class App {
 }
 
 const PLAYING = 'thrones.playing';
+
+const DIFFS: { id: Difficulty; name: string; desc: string }[] = [
+  { id: 'easy', name: 'Easy', desc: 'A gentle rival: small economy, late and small attacks.' },
+  { id: 'normal', name: 'Normal', desc: 'Builds a full economy, mixes its army and attacks in growing waves.' },
+  { id: 'hard', name: 'Hard', desc: 'Counters your army, retreats from lost fights, raids your villagers.' },
+  { id: 'raja', name: 'Raja', desc: 'Relentless: the fastest economy, early pressure, focus fire. No cheats — just better play.' },
+];

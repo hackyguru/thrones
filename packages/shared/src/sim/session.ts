@@ -1,7 +1,6 @@
 import { MAP_SIZE, TICK_RATE } from '../constants';
-import { mulberry32 } from '../rng';
-import type { Command, EntSnap, GameEvent, GameInit, GameOverInfo, PlayerInfo, Snapshot } from '../types';
-import { AIController } from './ai';
+import type { Command, Difficulty, EntSnap, GameEvent, GameInit, GameOverInfo, PlayerInfo, Snapshot } from '../types';
+import { AIController, type AISave } from './ai';
 import { buildingStats, unitStats } from '../data/stats';
 import { generateMap } from './mapgen';
 import { r2, World, type Entity } from './world';
@@ -10,7 +9,7 @@ export interface SessionSetup {
   seed: number;
   players: PlayerInfo[];
   mapSize?: number;
-  aiDifficulty?: 'easy' | 'normal';
+  aiDifficulty?: Difficulty;
 }
 
 /** One running match: the authoritative world plus AI players and snapshot generation. */
@@ -34,7 +33,7 @@ export class GameSession {
       if (e.kind === 'resource') this.initResources.push({ i: e.id, t: e.type as never, x: e.tx, y: e.ty, a: e.amount });
     }
     for (const p of setup.players) {
-      if (p.isAI) this.ais.push(new AIController(this.world, p.slot, setup.seed, setup.aiDifficulty ?? 'normal'));
+      if (p.isAI) this.ais.push(new AIController(this.world, p.slot, setup.seed, p.difficulty ?? setup.aiDifficulty ?? 'normal'));
     }
   }
 
@@ -138,10 +137,7 @@ export class GameSession {
       entities: ents,
       projectiles: w.projectiles,
       players: w.players.map((p) => ({ ...p, visible: b64(p.visible) })),
-      ais: this.ais.map((a) => {
-        const x = a as unknown as AIState;
-        return { slot: a.slot, wave: x.wave, nextAttack: x.nextAttack, attacking: [...x.attacking] };
-      }),
+      ais: this.ais.map((a) => a.save()),
     };
     return JSON.stringify(save);
   }
@@ -166,14 +162,7 @@ export class GameSession {
     w.projectiles = d.projectiles;
     w.events = [];
     w.players = d.players.map((p) => ({ ...p, visible: unb64(p.visible) }));
-    for (const a of d.ais) {
-      const ai = s.ais.find((x) => x.slot === a.slot) as unknown as AIState | undefined;
-      if (!ai) continue;
-      ai.wave = a.wave;
-      ai.nextAttack = a.nextAttack;
-      ai.attacking = new Set(a.attacking);
-      ai.rng = mulberry32(d.setup.seed ^ (a.slot * 7919) ^ d.tick);
-    }
+    for (const a of d.ais) s.ais.find((x) => x.slot === a.slot)?.load(a, d.setup.seed ^ d.tick);
     s.loaded = true;
     return s;
   }
@@ -196,6 +185,7 @@ function serialize(e: Entity, own: boolean): EntSnap {
       s.ct = e.carryType!;
     }
     if (e.order?.type === 'gather') s.g = e.order.resType;
+    if (own && e.stance) s.st = e.stance;
   } else {
     if (!e.built) s.p = r2(e.progress);
     if (e.type === 'farm') s.fa = Math.ceil(e.amount);
@@ -210,13 +200,6 @@ function serialize(e: Entity, own: boolean): EntSnap {
 
 const SAVE_VERSION = 1;
 
-interface AIState {
-  wave: number;
-  nextAttack: number;
-  attacking: Set<number>;
-  rng: () => number;
-}
-
 interface SaveData {
   v: number;
   setup: SessionSetup;
@@ -228,7 +211,7 @@ interface SaveData {
   entities: Entity[];
   projectiles: World['projectiles'];
   players: (Omit<World['players'][number], 'visible'> & { visible: string })[];
-  ais: { slot: number; wave: number; nextAttack: number; attacking: number[] }[];
+  ais: AISave[];
 }
 
 /** typed array <-> base64 (works in browsers and Node) */

@@ -29,6 +29,8 @@ export interface CEnt {
   q?: [UnitType, number][];
   r?: [number, number];
   fa?: number;
+  /** stance (own units) */
+  st?: number;
   /** building we remember but can't currently see */
   stale: boolean;
   dying: number;
@@ -488,6 +490,7 @@ export function applySnap(e: CEnt, s: EntSnap, now: number) {
   e.c = s.c ?? 0;
   e.ct = s.ct;
   e.g = s.g;
+  e.st = s.st;
   e.p = s.p;
   e.q = s.q;
   e.r = s.r;

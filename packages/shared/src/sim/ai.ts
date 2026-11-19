@@ -1,25 +1,110 @@
 import { TICK_RATE } from '../constants';
 import { CIVS } from '../data/civs';
 import { buildingStats, canAfford, trainable, unitStats } from '../data/stats';
+import { UNITS } from '../data/units';
 import { mulberry32, type Rng } from '../rng';
-import type { BuildingType, ResourceType, UnitType } from '../types';
+import type { BuildingType, CivId, Difficulty, ResourceType, UnitType } from '../types';
 import type { Entity, World } from './world';
 
-/** A straightforward scripted AI: boom, build military, attack in waves. */
+/**
+ * How each difficulty plays. Harder levels never get extra resources or vision: they simply
+ * manage the economy better, read the enemy army, retreat from lost fights and raid.
+ */
+interface Profile {
+  /** villager target */
+  vills: number;
+  /** seconds until the first attack, then between attacks */
+  firstAttack: number;
+  interval: number;
+  wave0: number;
+  waveGrow: number;
+  /** 0..1 how strictly it builds counters to what it has seen */
+  counter: number;
+  retreat: boolean;
+  /** villagers run home from raiders */
+  flee: boolean;
+  /** cavalry raids on enemy villagers */
+  raid: boolean;
+  /** archers pick off wounded units, melee goes for archers */
+  focus: boolean;
+  /** production buildings it is willing to own */
+  maxProd: number;
+  towers: number;
+  /** base defense radius */
+  defendR: number;
+}
+
+const PROFILES: Record<Difficulty, Profile> = {
+  easy: { vills: 16, firstAttack: 540, interval: 170, wave0: 4, waveGrow: 2, counter: 0.15, retreat: false, flee: false, raid: false, focus: false, maxProd: 2, towers: 0, defendR: 12 },
+  normal: { vills: 28, firstAttack: 360, interval: 110, wave0: 7, waveGrow: 3, counter: 0.55, retreat: true, flee: false, raid: false, focus: false, maxProd: 4, towers: 1, defendR: 18 },
+  hard: { vills: 38, firstAttack: 290, interval: 90, wave0: 9, waveGrow: 4, counter: 0.85, retreat: true, flee: true, raid: true, focus: true, maxProd: 6, towers: 2, defendR: 22 },
+  raja: { vills: 46, firstAttack: 240, interval: 75, wave0: 10, waveGrow: 4, counter: 1, retreat: true, flee: true, raid: true, focus: true, maxProd: 8, towers: 3, defendR: 26 },
+};
+
+const PROD: BuildingType[] = ['barracks', 'archery_range', 'stable'];
+
+/** rough fighting value of a unit: sqrt(hp × damage per second) */
+function power(e: Entity): number {
+  if (e.kind === 'building') return e.bs!.def.attack ? 9 : 0;
+  const us = e.us!;
+  return Math.sqrt(Math.max(1, e.hp) * (us.attack / us.def.cooldown)) * (us.def.cls === 'villager' ? 0.3 : 1);
+}
+
+export interface AISave {
+  slot: number;
+  wave: number;
+  nextAttack: number;
+  attacking: number[];
+  raiders?: number[];
+  raidUntil?: number;
+  nextRaid?: number;
+  seen?: [number, string, number, number, number][];
+}
+
+/** Scripted AI: boom, scout the enemy army by sight, build counters, attack in waves, retreat and raid. */
 export class AIController {
   private rng: Rng;
   private wave = 0;
   private nextAttack: number;
   private attacking = new Set<number>();
+  private raiders = new Set<number>();
+  private raidUntil = 0;
+  private nextRaid: number;
+  /** enemy units we have seen: id -> type, last position, tick */
+  private seen = new Map<number, { type: string; x: number; y: number; t: number }>();
+  /** villagers fleeing raiders, until tick */
+  private fleeing = new Map<number, number>();
+  private p: Profile;
 
   constructor(
     private w: World,
     public slot: number,
     seed: number,
-    private difficulty: 'easy' | 'normal' = 'normal',
+    difficulty: Difficulty = 'normal',
   ) {
     this.rng = mulberry32(seed ^ (slot * 7919));
-    this.nextAttack = TICK_RATE * (difficulty === 'easy' ? 480 : 330);
+    this.p = PROFILES[difficulty] ?? PROFILES.normal;
+    this.nextAttack = TICK_RATE * this.p.firstAttack;
+    this.nextRaid = TICK_RATE * 420;
+  }
+
+  save(): AISave {
+    return {
+      slot: this.slot, wave: this.wave, nextAttack: this.nextAttack, attacking: [...this.attacking],
+      raiders: [...this.raiders], raidUntil: this.raidUntil, nextRaid: this.nextRaid,
+      seen: [...this.seen].map(([id, s]) => [id, s.type, s.x, s.y, s.t]),
+    };
+  }
+
+  load(d: AISave, tick: number) {
+    this.wave = d.wave;
+    this.nextAttack = d.nextAttack;
+    this.attacking = new Set(d.attacking);
+    this.raiders = new Set(d.raiders ?? []);
+    this.raidUntil = d.raidUntil ?? 0;
+    this.nextRaid = d.nextRaid ?? this.nextRaid;
+    this.seen = new Map((d.seen ?? []).map(([id, type, x, y, t]) => [id, { type, x, y, t }]));
+    this.rng = mulberry32((this.slot * 7919) ^ tick);
   }
 
   update() {
@@ -27,28 +112,35 @@ export class AIController {
     const p = w.players[this.slot];
     if (!p || !p.alive) return;
     const civ = p.civ;
+    const P = this.p;
 
     const villagers: Entity[] = [];
     const military: Entity[] = [];
     const buildings = new Map<BuildingType, Entity[]>();
+    const enemies: Entity[] = [];
     for (const e of w.entities.values()) {
-      if (e.owner !== this.slot) continue;
-      if (e.kind === 'unit') (e.type === 'villager' ? villagers : military).push(e);
-      else if (e.kind === 'building') {
-        const t = e.type as BuildingType;
-        if (!buildings.has(t)) buildings.set(t, []);
-        buildings.get(t)!.push(e);
+      if (e.owner === this.slot) {
+        if (e.kind === 'unit') (e.type === 'villager' ? villagers : military).push(e);
+        else if (e.kind === 'building') {
+          const t = e.type as BuildingType;
+          if (!buildings.has(t)) buildings.set(t, []);
+          buildings.get(t)!.push(e);
+        }
+      } else if (e.kind === 'unit' && w.isEnemy(this.slot, e.owner) && w.visibleTo(this.slot, e)) {
+        enemies.push(e);
+        this.seen.set(e.id, { type: e.type, x: e.x, y: e.y, t: w.tick });
       }
     }
+    for (const [id, s] of this.seen) if (!w.entities.has(id) || w.tick - s.t > TICK_RATE * 150) this.seen.delete(id);
     const list = (t: BuildingType) => buildings.get(t) ?? [];
     const tc = list('town_center')[0];
     const home = tc ?? (villagers[0] || military[0]);
     if (!home) return;
     const unfinished = [...buildings.values()].flat().filter((b) => !b.built);
+    const prodCount = PROD.reduce((n, t) => n + list(t).length, 0);
 
     // --- villagers ---
-    const targetVills = this.difficulty === 'easy' ? 18 : 32;
-    if (tc && tc.built && tc.queue.length < 2 && villagers.length + tc.queue.length < targetVills && p.res.food >= 50) {
+    if (tc && tc.built && tc.queue.length < 2 && villagers.length + tc.queue.length < P.vills && p.res.food >= 50) {
       w.command(this.slot, { c: 'train', building: tc.id, type: 'villager' });
     }
 
@@ -65,21 +157,44 @@ export class AIController {
     };
 
     const housesBuilding = unfinished.filter((b) => b.type === 'house').length;
-    if (p.popCap < 200 && p.popCap - p.pop < 4 + list('barracks').length * 2 && housesBuilding < 1 + (villagers.length > 15 ? 1 : 0)) {
-      tryBuild('house', home, 4, 14);
+    const prodRate = 4 + prodCount * 2;
+    if (p.popCap < 200 && p.popCap - p.pop < prodRate && housesBuilding < 1 + (villagers.length > 15 ? 1 : 0) + (prodCount > 3 ? 1 : 0)) {
+      tryBuild('house', home, 4, 15);
     }
-    if (unfinished.length < 2) {
+    const best = this.bestUnits(civ);
+    if (unfinished.length < 2 + (P.maxProd > 4 ? 1 : 0)) {
       const nv = villagers.length;
       const has = (t: BuildingType) => list(t).length;
       if (!tc && nv > 0) tryBuild('town_center', home, 0, 10);
       else if (nv >= 6 && has('storehouse') < 1) this.buildStorehouse(tryBuild, home, 'wood');
       else if (nv >= 9 && has('barracks') < 1) tryBuild('barracks', home, 6, 14);
       else if (nv >= 12 && has('storehouse') < 2) this.buildStorehouse(tryBuild, home, 'gold');
-      else if (nv >= 12 && has('farm') < Math.floor(nv * 0.3) && this.berriesLeft(home) < 3) tryBuild('farm', home, 3, 9);
+      else if (nv >= 12 && has('farm') < Math.floor(nv * 0.3) && this.berriesLeft(home) < 3) tryBuild('farm', home, 3, 10);
       else if (nv >= 14 && has('archery_range') < 1) tryBuild('archery_range', home, 6, 15);
       else if (nv >= 17 && has('stable') < 1) tryBuild('stable', home, 6, 15);
-      else if (nv >= 20 && has('tower') < 1) tryBuild('tower', home, 6, 10);
-      else if (nv >= 24 && has('barracks') < 2 && this.difficulty !== 'easy') tryBuild('barracks', home, 6, 16);
+      else if (nv >= 20 && has('tower') < P.towers) tryBuild('tower', this.towardEnemy(home, 7), 0, 5);
+      else if (!this.expand(tryBuild, villagers, home) && nv >= 22 && prodCount < P.maxProd) {
+        // spend a growing bank on more production of what the army needs most
+        const r = p.res;
+        if (r.food + r.gold + r.wood > 900 || prodCount < 3) {
+          const want = best[0] ? UNITS[best[0]].trainedAt : 'barracks';
+          tryBuild(want, home, 6, 18);
+        }
+      }
+    }
+
+    // --- villagers fleeing raiders ---
+    for (const [id, until] of this.fleeing) if (w.tick > until || !w.entities.has(id)) this.fleeing.delete(id);
+    if (P.flee && tc) {
+      for (const v of villagers) {
+        if (this.fleeing.has(v.id)) continue;
+        const t = w.findEnemyNear(this.slot, v.x, v.y, 4, false);
+        if (!t || t.type === 'villager' || Math.hypot(v.x - tc.x, v.y - tc.y) < 6) continue;
+        const guards = military.filter((m) => Math.hypot(m.x - v.x, m.y - v.y) < 7).length;
+        if (guards >= 2) continue;
+        this.fleeing.set(v.id, w.tick + TICK_RATE * 14);
+        w.groupMove([v], tc.x + (this.rng() - 0.5) * 4, tc.y + tc.size / 2 + 1);
+      }
     }
 
     // --- gather assignment ---
@@ -88,15 +203,11 @@ export class AIController {
     for (const v of villagers) {
       if (v.order?.type === 'gather' && v.order.resType) counts[v.order.resType]++;
       else if (v.order?.type === 'build') continue;
-      else if (!v.order) idle.push(v);
+      else if (!v.order && !this.fleeing.has(v.id)) idle.push(v);
     }
-    // send idle villagers to help unfinished buildings first
     for (const b of unfinished) {
       const builders = villagers.filter((v) => v.order?.type === 'build' && v.order.target === b.id).length;
-      if (builders === 0 && idle.length) {
-        const v = idle.shift()!;
-        w.orderBuild(v, b);
-      }
+      if (builders < (b.type === 'town_center' ? 3 : 1) && idle.length) w.orderBuild(idle.shift()!, b);
     }
     const n = villagers.length;
     const want: Record<ResourceType, number> =
@@ -104,90 +215,307 @@ export class AIController {
         ? { food: 0.6, wood: 0.4, gold: 0, stone: 0 }
         : n < 18
           ? { food: 0.48, wood: 0.34, gold: 0.18, stone: 0 }
-          : { food: 0.42, wood: 0.3, gold: 0.2, stone: 0.08 };
-    for (const v of idle) {
+          : { food: 0.4, wood: 0.28, gold: 0.24, stone: 0.08 };
+    const deficit = (rt: ResourceType) => want[rt] * n - counts[rt];
+    const pickRes = () => {
       let best: ResourceType = 'food';
       let bestDef = -Infinity;
       for (const rt of Object.keys(want) as ResourceType[]) {
-        const def = want[rt] * n - counts[rt];
-        if (def > bestDef) {
-          bestDef = def;
+        if (deficit(rt) > bestDef) {
+          bestDef = deficit(rt);
           best = rt;
         }
       }
-      const target = w.findResource(this.slot, best, home.x, home.y, 40) ?? w.findResource(this.slot, 'wood', home.x, home.y, 60);
+      return best;
+    };
+    for (const v of idle) {
+      const rt = pickRes();
+      const target = w.findResource(this.slot, rt, home.x, home.y, 40) ?? w.findResource(this.slot, rt, home.x, home.y, 70) ?? w.findResource(this.slot, 'wood', home.x, home.y, 70);
       if (target) {
         w.orderGather(v, target);
-        counts[best]++;
+        counts[rt]++;
+      }
+    }
+    // better economies rebalance: move one worker from the most over-staffed resource
+    if (P.counter >= 0.55 && n >= 12 && w.tick % (TICK_RATE * 4) < TICK_RATE / 2) {
+      const types = Object.keys(want) as ResourceType[];
+      const over = types.reduce((a, b) => (deficit(a) < deficit(b) ? a : b));
+      const under = types.reduce((a, b) => (deficit(a) > deficit(b) ? a : b));
+      if (deficit(over) < -1.5 && deficit(under) > 1.5) {
+        const v = villagers.find((x) => x.order?.type === 'gather' && x.order.resType === over && x.carry < 2);
+        const t = v && w.findResource(this.slot, under, v.x, v.y, 45);
+        if (v && t) w.orderGather(v, t);
       }
     }
 
     // --- military production ---
-    const reserveFood = villagers.length < targetVills ? 60 : 0;
-    for (const t of ['barracks', 'archery_range', 'stable'] as BuildingType[]) {
+    const reserveFood = villagers.length < P.vills ? 50 : 0;
+    for (const t of PROD) {
       for (const b of list(t)) {
         if (!b.built || b.queue.length >= 2) continue;
         const opts = trainable(civ, t);
-        const unique = CIVS[civ].unique;
-        let choice: UnitType = opts.includes(unique) && this.rng() < 0.45 ? unique : opts[Math.floor(this.rng() * opts.length)];
-        const cost = unitStats(civ, choice).cost;
-        if (p.res.food - (cost.food ?? 0) < reserveFood) continue;
-        if (!canAfford(p.res, cost)) {
-          choice = opts[0];
-          if (!canAfford(p.res, unitStats(civ, choice).cost)) continue;
+        const ranked = this.bestUnits(civ, opts);
+        for (const choice of ranked) {
+          const cost = unitStats(civ, choice).cost;
+          if (p.res.food - (cost.food ?? 0) < reserveFood || !canAfford(p.res, cost)) continue;
+          if (!b.rally) {
+            const s = this.towardEnemy(home, 6);
+            w.command(this.slot, { c: 'rally', building: b.id, x: s.x, y: s.y });
+          }
+          w.command(this.slot, { c: 'train', building: b.id, type: choice });
+          break;
         }
-        if (!b.rally) w.command(this.slot, { c: 'rally', building: b.id, x: home.x + (w.size / 2 - home.x) * 0.12, y: home.y + (w.size / 2 - home.y) * 0.12 });
-        w.command(this.slot, { c: 'train', building: b.id, type: choice });
       }
     }
 
-    // --- defense ---
-    const threat = w.findEnemyNear(this.slot, home.x, home.y, 16, false);
-    if (threat) {
-      for (const m of military) {
-        if (!m.order || (m.order.type === 'attack' && !this.attacking.has(m.id))) w.orderAttack(m, threat, false);
+    // --- defense: anything hostile near the town or any building ---
+    for (const id of [...this.attacking]) if (!w.entities.has(id)) this.attacking.delete(id);
+    for (const id of [...this.raiders]) if (!w.entities.has(id)) this.raiders.delete(id);
+    let threat = w.findEnemyNear(this.slot, home.x, home.y, P.defendR, false);
+    if (!threat) {
+      for (const bs of buildings.values()) {
+        for (const b of bs) {
+          threat = w.findEnemyNear(this.slot, b.x, b.y, 6 + b.size / 2, false);
+          if (threat) break;
+        }
+        if (threat) break;
       }
+    }
+    if (threat) {
+      const near = enemies.filter((e) => Math.hypot(e.x - threat!.x, e.y - threat!.y) < 8);
+      const enemyPow = near.reduce((s, e) => s + power(e), 0);
+      const defenders = military.filter((m) => !this.attacking.has(m.id) && !this.raiders.has(m.id));
+      let defPow = defenders.reduce((s, e) => s + power(e), 0);
+      // big attack on the base: call the army home
+      if (P.retreat && enemyPow > defPow * 1.2 && this.attacking.size) {
+        for (const id of this.attacking) {
+          const m = w.entities.get(id)!;
+          defenders.push(m);
+          defPow += power(m);
+        }
+        this.attacking.clear();
+      }
+      const busy = (m: Entity) => {
+        const o = m.order;
+        if (!o) return false;
+        if (o.type === 'attack') return !o.auto || w.entities.get(o.target)?.kind === 'unit';
+        if (o.type === 'move') return !!m.amove && Math.hypot(m.amove.x - threat!.x, m.amove.y - threat!.y) < 8;
+        return true;
+      };
+      const fresh = defenders.filter((m) => !busy(m));
+      if (fresh.length) w.attackMove(fresh, threat.x, threat.y);
       if (military.length === 0 && tc) {
-        // villagers defend against lone raiders
-        const nearVills = villagers.filter((v) => Math.hypot(v.x - threat.x, v.y - threat.y) < 6).slice(0, 6);
-        if (threat.type !== 'elephant' && nearVills.length >= 3) for (const v of nearVills) w.orderAttack(v, threat, false);
+        const nearVills = villagers.filter((v) => Math.hypot(v.x - threat!.x, v.y - threat!.y) < 6).slice(0, 6);
+        if (threat.type !== 'elephant' && nearVills.length >= 3 && enemyPow < 25) for (const v of nearVills) w.orderAttack(v, threat, false);
       }
     }
 
     // --- attack waves ---
-    for (const id of [...this.attacking]) if (!w.entities.has(id)) this.attacking.delete(id);
-    const available = military.filter((m) => !this.attacking.has(m.id));
-    const waveSize = Math.min(24, (this.difficulty === 'easy' ? 5 : 7) + this.wave * 3);
-    if (w.tick >= this.nextAttack && available.length >= waveSize) {
+    const available = military.filter((m) => !this.attacking.has(m.id) && !this.raiders.has(m.id));
+    const waveSize = Math.min(30, P.wave0 + this.wave * P.waveGrow);
+    if (!threat && w.tick >= this.nextAttack && available.length >= waveSize) {
       const target = this.pickTarget(home);
       if (target) {
-        for (const m of available) {
-          w.orderAttack(m, target, false);
-          this.attacking.add(m.id);
-        }
+        w.attackMove(available, target.x, target.y);
+        for (const m of available) this.attacking.add(m.id);
         this.wave++;
-        this.nextAttack = w.tick + TICK_RATE * (this.difficulty === 'easy' ? 150 : 100);
+        this.nextAttack = w.tick + TICK_RATE * P.interval;
       }
     }
-    // attackers: engage nearby units, then continue to next target
-    for (const id of this.attacking) {
-      const m = w.entities.get(id)!;
-      const cur = m.order?.type === 'attack' ? w.entities.get(m.order.target) : undefined;
-      if (!cur || cur.kind === 'building') {
-        const near = w.findEnemyNear(this.slot, m.x, m.y, 7, false);
-        if (near) w.orderAttack(m, near, false);
-        else if (!cur) {
-          const t = this.pickTarget(m);
-          if (t) w.orderAttack(m, t, false);
+    this.manageArmy([...this.attacking], home, enemies, false);
+
+    // --- raids ---
+    if (P.raid) {
+      if (!this.raiders.size && w.tick >= this.nextRaid) {
+        const fast = available.filter((m) => m.us!.speed >= 2.2 && !m.us!.def.ranged && m.hp > m.maxHp * 0.7);
+        const spot = this.raidSpot();
+        if (fast.length >= 4 && spot) {
+          const group = fast.slice(0, 8);
+          w.attackMove(group, spot.x, spot.y);
+          for (const m of group) this.raiders.add(m.id);
+          this.raidUntil = w.tick + TICK_RATE * 45;
+        }
+        this.nextRaid = w.tick + TICK_RATE * 100;
+      }
+      if (this.raiders.size) {
+        const done = w.tick > this.raidUntil;
+        const ids = [...this.raiders];
+        if (done || this.manageArmy(ids, home, enemies, true)) {
+          const back = ids.map((id) => w.entities.get(id)!).filter(Boolean);
+          const s = this.towardEnemy(home, 6);
+          w.groupMove(back, s.x, s.y);
+          this.raiders.clear();
         }
       }
     }
   }
 
+  /**
+   * Keep an attacking group fighting sensibly. Returns true if it retreated.
+   * Retreats when clearly outmatched; otherwise keeps it marching from target to target.
+   */
+  private manageArmy(ids: number[], home: Entity, enemies: Entity[], raid: boolean): boolean {
+    const w = this.w;
+    const army = ids.map((id) => w.entities.get(id)).filter((e): e is Entity => !!e);
+    if (!army.length) return false;
+    let cx = 0, cy = 0;
+    for (const m of army) {
+      cx += m.x;
+      cy += m.y;
+    }
+    cx /= army.length;
+    cy /= army.length;
+    const P = this.p;
+    if (P.retreat) {
+      const ownPow = army.reduce((s, e) => s + power(e), 0);
+      let foePow = 0;
+      for (const e of enemies) if (Math.hypot(e.x - cx, e.y - cy) < 9) foePow += power(e);
+      for (const e of w.entities.values()) {
+        if (e.kind === 'building' && e.bs!.def.attack && w.isEnemy(this.slot, e.owner) && Math.hypot(e.x - cx, e.y - cy) < 9) foePow += power(e);
+      }
+      const hurt = raid && army.some((m) => m.hp < m.maxHp * 0.35);
+      if (foePow > ownPow * (raid ? 0.8 : 1.9) || hurt) {
+        const s = this.towardEnemy(home, 5);
+        w.groupMove(army, s.x, s.y);
+        if (!raid) {
+          for (const m of army) this.attacking.delete(m.id);
+          this.nextAttack = Math.max(this.nextAttack, w.tick + TICK_RATE * P.interval * 0.6);
+        }
+        return true;
+      }
+    }
+    for (const m of army) {
+      const o = m.order;
+      if (!o || (o.type === 'move' && !m.amove)) {
+        const t = raid ? this.raidSpot() : this.pickTarget({ x: cx, y: cy });
+        if (t) w.attackMove([m], t.x, t.y);
+        continue;
+      }
+      if (!P.focus || o.type !== 'attack') continue;
+      // focus fire: archers finish off the wounded, melee goes for archers and raiders hunt villagers
+      const cur = w.entities.get(o.target);
+      const reach = m.us!.def.ranged ? m.us!.range + 1 : 3;
+      let best: Entity | null = null;
+      let bs = Infinity;
+      for (const e of enemies) {
+        const d = w.distTo(m, e);
+        if (d > reach) continue;
+        let s = d * 0.4 + (e.hp / e.maxHp) * 3;
+        if (!m.us!.def.ranged && e.us!.def.ranged) s -= 2;
+        if (raid && e.type === 'villager') s -= 3;
+        s -= ((m.us!.def.bonus?.[e.us!.def.cls] ?? 0) / 4);
+        if (s < bs) {
+          bs = s;
+          best = e;
+        }
+      }
+      if (best && best !== cur && (!cur || cur.kind === 'building' || bs < -0.5 || (cur.kind === 'unit' && cur.hp / cur.maxHp > 0.5))) {
+        w.orderAttack(m, best, true);
+      }
+    }
+    return false;
+  }
+
+  /** trainable units ranked by how well they answer the enemy army we've seen */
+  private bestUnits(c: CivId, opts?: UnitType[]): UnitType[] {
+    const options = opts ?? PROD.flatMap((t) => trainable(c, t));
+    const counts = new Map<string, number>();
+    let total = 0;
+    for (const s of this.seen.values()) {
+      if (s.type === 'villager') continue;
+      counts.set(s.type, (counts.get(s.type) ?? 0) + 1);
+      total++;
+    }
+    const unique = CIVS[c].unique;
+    const scored = options.map((u) => {
+      const def = UNITS[u];
+      let s = 1;
+      if (total) {
+        for (const [t, k] of counts) {
+          const ed = UNITS[t as UnitType];
+          s += ((k / total) * ((def.bonus?.[ed.cls] ?? 0) - (ed.bonus?.[def.cls] ?? 0))) / 5 * this.p.counter;
+        }
+      } else if (def.cls === 'infantry' && def.bonus?.cavalry) s -= 0.2; // spearmen only when needed
+      if (u === unique) s += 0.35;
+      s += (this.rng() - 0.5) * (1.3 - this.p.counter);
+      return { u, s };
+    });
+    return scored.sort((a, b) => b.s - a.s).map((x) => x.u);
+  }
+
+  /** a storehouse near remote work sites, so villagers stop walking across the map */
+  private expand(tryBuild: (t: BuildingType, near: { x: number; y: number }, a: number, b: number) => boolean, villagers: Entity[], home: Entity): boolean {
+    const w = this.w;
+    const sites = new Map<string, { x: number; y: number; n: number }>();
+    for (const v of villagers) {
+      const o = v.order;
+      if (o?.type !== 'gather' || o.resType === 'food') continue;
+      const t = w.entities.get(o.target);
+      if (!t || t.kind !== 'resource') continue;
+      let near = Infinity;
+      for (const e of w.entities.values()) {
+        if (e.kind === 'building' && e.owner === this.slot && e.bs!.def.dropoff.includes(o.resType!)) near = Math.min(near, Math.hypot(e.x - t.x, e.y - t.y));
+      }
+      if (near < 9) continue;
+      const key = `${Math.floor(t.x / 8)},${Math.floor(t.y / 8)}`;
+      const s = sites.get(key) ?? { x: t.x, y: t.y, n: 0 };
+      s.n++;
+      sites.set(key, s);
+    }
+    const best = [...sites.values()].sort((a, b) => b.n - a.n)[0];
+    if (!best || best.n < 3 || Math.hypot(best.x - home.x, best.y - home.y) > 45) return false;
+    return tryBuild('storehouse', best, 2, 5);
+  }
+
+  /** a point from home toward the nearest enemy start */
+  private towardEnemy(home: { x: number; y: number }, dist: number) {
+    const w = this.w;
+    let tx = w.size / 2, ty = w.size / 2, bd = Infinity;
+    w.players.forEach((pl, i) => {
+      if (!pl.alive || !w.isEnemy(this.slot, pl.slot)) return;
+      const s = w.starts[i];
+      if (!s) return;
+      const d = Math.hypot(s.x - home.x, s.y - home.y);
+      if (d < bd) {
+        bd = d;
+        tx = s.x;
+        ty = s.y;
+      }
+    });
+    const dx = tx - home.x, dy = ty - home.y;
+    const l = Math.hypot(dx, dy) || 1;
+    return { x: home.x + (dx / l) * dist, y: home.y + (dy / l) * dist };
+  }
+
+  /** where enemy villagers were last seen working away from their town */
+  private raidSpot(): { x: number; y: number } | null {
+    const w = this.w;
+    let best: { x: number; y: number } | null = null;
+    let bs = -Infinity;
+    for (const s of this.seen.values()) {
+      if (s.type !== 'villager' || w.tick - s.t > TICK_RATE * 90) continue;
+      let guard = 0;
+      for (const e of w.entities.values()) {
+        if (e.kind === 'building' && w.isEnemy(this.slot, e.owner) && e.bs!.def.attack && Math.hypot(e.x - s.x, e.y - s.y) < 9) guard++;
+      }
+      const score = -guard * 10 + this.rng();
+      if (score > bs) {
+        bs = score;
+        best = s;
+      }
+    }
+    if (best && bs > -5) return best;
+    // never seen their workers: go look around their woodlines
+    for (const e of w.entities.values()) {
+      if (e.kind === 'building' && e.type === 'storehouse' && w.isEnemy(this.slot, e.owner)) return e;
+    }
+    return null;
+  }
+
   private pickBuilder(villagers: Entity[]): Entity | null {
     let best: Entity | null = null;
     for (const v of villagers) {
-      if (v.order?.type === 'build') continue;
+      if (v.order?.type === 'build' || this.fleeing.has(v.id)) continue;
       if (!v.order) return v;
       if (v.order.type === 'gather' && (v.order.resType === 'wood' || !best)) best = v;
     }
@@ -202,7 +530,6 @@ export class AIController {
     const r = this.w.findResource(this.slot, rt, home.x, home.y, 30);
     if (!r) return;
     if (Math.hypot(r.x - home.x, r.y - home.y) < 7) {
-      // resource is close to the town center already; still useful to have one
       tryBuild('storehouse', { x: (r.x + home.x) / 2, y: (r.y + home.y) / 2 }, 1, 6);
     } else tryBuild('storehouse', r, 2, 6);
   }
@@ -219,8 +546,8 @@ export class AIController {
     let bd = Infinity;
     for (const e of this.w.entities.values()) {
       if (e.kind !== 'building' || !this.w.isEnemy(this.slot, e.owner)) continue;
-      // prefer military & town centers, avoid farms
-      const weight = e.type === 'farm' ? 30 : e.type === 'house' ? 8 : 0;
+      // prefer production and town centers, avoid farms and walls of houses
+      const weight = e.type === 'farm' ? 30 : e.type === 'house' ? 8 : e.type === 'tower' ? 6 : 0;
       const d = Math.hypot(e.x - from.x, e.y - from.y) + weight;
       if (d < bd) {
         bd = d;
@@ -239,4 +566,3 @@ export class AIController {
     return best;
   }
 }
-

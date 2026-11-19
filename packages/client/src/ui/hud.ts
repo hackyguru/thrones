@@ -21,6 +21,8 @@ interface CmdButton {
   desc?: string;
   cost?: Cost;
   disabled?: boolean;
+  /** highlighted (current stance) */
+  active?: boolean;
   action: () => void;
 }
 
@@ -446,7 +448,12 @@ export class Hud {
         });
       } else {
         out.push({ ...moveBtn, key: 'Q' });
-        out.push({ key: 'A', icon: ICONS.attack, title: 'Attack', desc: 'Click an enemy to attack, or ground to march there.', action: () => this.input.arm('attack') });
+        out.push({ key: 'A', icon: ICONS.attack, title: 'Attack-move', desc: 'Click an enemy to attack it, or the ground to march there in formation, fighting everything met on the way.', action: () => this.input.arm('attack') });
+        const st = (s: number) => units.every((u) => (u.st ?? 0) === s);
+        const stance = (s: 0 | 1 | 2) => () => g.link.send({ c: 'stance', ids: units.map((u) => u.id), s });
+        out.push({ key: 'S', icon: ICONS.aggressive, title: 'Stance: Aggressive', desc: 'Attack any enemy in sight and chase it.', active: st(0), action: stance(0) });
+        out.push({ key: 'D', icon: ICONS.defensive, title: 'Stance: Defensive', desc: 'Fight enemies that come close, then return to post.', active: st(1), action: stance(1) });
+        out.push({ key: 'F', icon: ICONS.hold, title: 'Stance: Hold Ground', desc: 'Never move; only strike what is in reach. Good for archers behind a wall of spears.', active: st(2), action: stance(2) });
       }
       out.push({ key: 'Z', icon: ICONS.stop, title: 'Stop', desc: 'Halt current orders.', action: () => g.link.send({ c: 'stop', ids: units.map((u) => u.id) }) });
       out.push({ key: 'V', icon: ICONS.trash, title: 'Delete', desc: 'Dismiss the selected units (Del).', action: () => g.link.send({ c: 'delete', ids: units.map((u) => u.id) }) });
@@ -483,7 +490,7 @@ export class Hud {
     const sel = this.input.selected();
     // command card (re-render only on change)
     const buttons = this.buildButtons(sel);
-    const sig = buttons.map((b) => b.key + b.title + (b.disabled ? 0 : 1)).join('|');
+    const sig = buttons.map((b) => b.key + b.title + (b.disabled ? 0 : 1) + (b.active ? 'a' : '')).join('|');
     if (sig !== this.cardSig) {
       this.cardSig = sig;
       this.buttons = buttons;
@@ -491,7 +498,7 @@ export class Hud {
         const i = buttons.findIndex((b) => b.key === k);
         if (i < 0) return `<div class="cmd empty"></div>`;
         const b = buttons[i];
-        return `<button class="cmd ${b.disabled ? 'disabled' : ''}" data-i="${i}">${b.icon}<kbd>${k}</kbd></button>`;
+        return `<button class="cmd ${b.disabled ? 'disabled' : ''} ${b.active ? 'active' : ''}" data-i="${i}">${b.icon}<kbd>${k}</kbd></button>`;
       }).join('');
     }
     // selection panel

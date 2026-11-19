@@ -6,7 +6,7 @@ import { buildingStats, canAfford, gatherRate, pay, trainable, unitStats, type B
 import { UNITS } from '../data/units';
 import {
   Anim, type AnimCode, type BuildingType, type Command, type EntityKind, type GameEvent, type PlayerInfo,
-  type PlayerStats, type ResourceNodeType, type ResourceType, type TargetClass, type UnitType, type Vec2,
+  type PlayerStats, type ResourceNodeType, type ResourceType, type Stance, type TargetClass, type UnitType, type Vec2,
 } from '../types';
 import type { MapData } from './mapgen';
 import { Pathfinder } from './pathfinding';
@@ -19,6 +19,8 @@ export interface Order {
   resType?: ResourceType;
   phase?: 'go' | 'return';
   auto?: boolean;
+  /** formation march: move no faster than this (tiles/s) */
+  pace?: number;
 }
 
 export interface Entity {
@@ -48,6 +50,12 @@ export interface Entity {
   carryType: ResourceType | null;
   cooldown: number;
   lastFight: number;
+  /** combat stance (absent in old saves = aggressive) */
+  stance?: Stance;
+  /** where a defensive / hold-ground unit belongs */
+  guard?: Vec2 | null;
+  /** attack-move destination, resumed after each fight */
+  amove?: Vec2 | null;
   // building
   bs: BuildingStats | null;
   built: boolean;
@@ -219,7 +227,7 @@ export class World {
       id: this.nextId++, kind, type, owner, x, y, hp: 1, maxHp: 1, dead: false,
       tx: Math.floor(x), ty: Math.floor(y), size: 1,
       us: null, order: null, path: null, pathIdx: 0, repath: 0, fails: 0, anim: Anim.IDLE, facing: Math.PI / 2,
-      carry: 0, carryType: null, cooldown: 0, lastFight: -1000,
+      carry: 0, carryType: null, cooldown: 0, lastFight: -1000, stance: 0, guard: null, amove: null,
       bs: null, built: true, progress: 1, builders: 0, queue: [], rally: null,
       resType: null, amount: 0,
     };
@@ -424,7 +432,8 @@ export class World {
   /** Advance along the path. Returns true when the path is finished. */
   private followPath(u: Entity): boolean {
     if (!u.path || u.pathIdx >= u.path.length) return true;
-    let step = u.us!.speed / TICK_RATE;
+    const pace = u.order?.type === 'move' && u.order.pace ? Math.min(u.order.pace, u.us!.speed) : u.us!.speed;
+    let step = pace / TICK_RATE;
     while (step > 1e-6 && u.pathIdx < u.path.length) {
       const wp = u.path[u.pathIdx];
       const dx = wp.x - u.x, dy = wp.y - u.y;
@@ -521,6 +530,19 @@ export class World {
       case 'move':
         this.groupMove(ownUnits(cmd.ids), cmd.x, cmd.y);
         break;
+      case 'amove':
+        this.attackMove(ownUnits(cmd.ids), cmd.x, cmd.y);
+        break;
+      case 'stance': {
+        const st = cmd.s === 1 || cmd.s === 2 ? cmd.s : 0;
+        for (const u of ownUnits(cmd.ids)) {
+          if (u.type === 'villager') continue;
+          u.stance = st;
+          u.guard = { x: u.x, y: u.y };
+          if (st === 2 && u.order?.type === 'attack' && u.order.auto) this.idle(u);
+        }
+        break;
+      }
       case 'smart':
         this.smart(slot, ownUnits(cmd.ids), cmd.x, cmd.y, cmd.target);
         break;
@@ -568,7 +590,11 @@ export class World {
         break;
       }
       case 'stop':
-        for (const u of ownUnits(cmd.ids)) this.idle(u);
+        for (const u of ownUnits(cmd.ids)) {
+          this.idle(u);
+          u.amove = null;
+          u.guard = { x: u.x, y: u.y };
+        }
         break;
       case 'delete':
         for (const id of cmd.ids) {
@@ -603,40 +629,103 @@ export class World {
     if (movers.length) this.groupMove(movers, x, y);
   }
 
+  /**
+   * Move a group in formation: melee in front, ranged behind, villagers at the back, each rank
+   * keeping its left-to-right order so nobody crosses paths. A compact group marches at the pace
+   * of its slowest member so it arrives together.
+   */
   groupMove(units: Entity[], x: number, y: number) {
     if (!units.length) return;
-    if (units.length === 1) {
-      const u = units[0];
-      u.order = { type: 'move', x, y, target: 0 };
+    const send = (u: Entity, tx: number, ty: number, pace?: number) => {
+      u.order = { type: 'move', x: tx, y: ty, target: 0, pace };
       u.path = null;
       u.fails = 0;
+      u.amove = null;
+      u.guard = { x: tx, y: ty };
+    };
+    if (units.length === 1) {
+      send(units[0], x, y);
       return;
     }
-    const spacing = 0.95;
-    const offsets: Vec2[] = [];
-    const ring = Math.ceil(Math.sqrt(units.length)) + 2;
-    for (let dy = -ring; dy <= ring; dy++)
-      for (let dx = -ring; dx <= ring; dx++) offsets.push({ x: dx * spacing, y: dy * spacing });
-    offsets.sort((a, b) => a.x * a.x + a.y * a.y - (b.x * b.x + b.y * b.y));
-    const sorted = [...units].sort((a, b) => Math.hypot(a.x - x, a.y - y) - Math.hypot(b.x - x, b.y - y));
-    let k = 0;
-    for (const u of sorted) {
-      let tx = x, ty = y;
-      while (k < offsets.length) {
-        const o = offsets[k++];
-        if (this.walkableAt(x + o.x, y + o.y)) {
-          tx = x + o.x;
-          ty = y + o.y;
-          break;
+    let cx = 0, cy = 0;
+    for (const u of units) {
+      cx += u.x;
+      cy += u.y;
+    }
+    cx /= units.length;
+    cy /= units.length;
+    let fx = x - cx, fy = y - cy;
+    const fl = Math.hypot(fx, fy);
+    if (fl < 1e-3) {
+      fx = 0;
+      fy = 1;
+    } else {
+      fx /= fl;
+      fy /= fl;
+    }
+    // lateral axis (right-hand side of the march direction)
+    const lx = -fy, ly = fx;
+    const rank = (u: Entity) => {
+      const cls = u.us!.def.cls;
+      return cls === 'villager' ? 3 : u.us!.def.ranged ? 2 : cls === 'cavalry' ? 1 : 0;
+    };
+    const big = units.some((u) => u.us!.def.cls === 'elephant');
+    const spacing = big ? 1.35 : units.some((u) => u.us!.def.cls === 'cavalry') ? 1.15 : 0.95;
+    const cols = Math.max(3, Math.min(14, Math.ceil(Math.sqrt(units.length * 2.2))));
+    const ranks = [0, 1, 2, 3].map((r) =>
+      units.filter((u) => rank(u) === r).sort((a, b) => (a.x - cx) * lx + (a.y - cy) * ly - ((b.x - cx) * lx + (b.y - cy) * ly)),
+    );
+    const slots: { u: Entity; row: number; col: number }[] = [];
+    let row = 0;
+    for (const list of ranks) {
+      for (let i = 0; i < list.length; i += cols) {
+        const chunk = list.slice(i, i + cols);
+        chunk.forEach((u, k) => slots.push({ u, row, col: k - (chunk.length - 1) / 2 }));
+        row++;
+      }
+    }
+    const rows = row;
+    // compact groups keep formation pace; scattered ones just converge
+    let spread = 0;
+    for (const u of units) spread = Math.max(spread, Math.hypot(u.x - cx, u.y - cy));
+    const military = units.some((u) => u.type !== 'villager');
+    const pace = military && spread < 9 ? Math.min(...units.map((u) => u.us!.speed)) : undefined;
+    const taken = new Set<number>();
+    for (const s of slots) {
+      const back = (s.row - (rows - 1) / 2) * spacing;
+      let tx = x + lx * s.col * spacing - fx * back;
+      let ty = y + ly * s.col * spacing - fy * back;
+      const key = (a: number, b: number) => Math.floor(a * 2) + Math.floor(b * 2) * 4096;
+      if (!this.walkableAt(tx, ty) || taken.has(key(tx, ty))) {
+        const w = this.nearestWalkable(tx, ty, 4);
+        if (w) {
+          tx = w.x + ((s.u.id % 5) - 2) * 0.08;
+          ty = w.y + ((s.u.id % 3) - 1) * 0.08;
+        } else {
+          tx = x;
+          ty = y;
         }
       }
-      u.order = { type: 'move', x: tx, y: ty, target: 0 };
-      u.path = null;
-      u.fails = 0;
+      taken.add(key(tx, ty));
+      send(s.u, tx, ty, pace);
     }
   }
 
+  /** march in formation and fight whatever is met on the way, then carry on */
+  attackMove(units: Entity[], x: number, y: number) {
+    const fighters = units.filter((u) => u.type !== 'villager');
+    const vills = units.filter((u) => u.type === 'villager');
+    if (vills.length) this.groupMove(vills, x, y);
+    if (!fighters.length) return;
+    this.groupMove(fighters, x, y);
+    for (const u of fighters) u.amove = { x: u.order!.x, y: u.order!.y };
+  }
+
   orderAttack(u: Entity, t: Entity, auto: boolean) {
+    if (!auto) {
+      u.amove = null;
+      u.guard = null;
+    }
     u.order = { type: 'attack', x: t.x, y: t.y, target: t.id, auto };
     u.path = null;
     u.fails = 0;
@@ -645,6 +734,7 @@ export class World {
 
   orderGather(u: Entity, t: Entity) {
     if (u.type !== 'villager' || !t.resType) return;
+    u.amove = null;
     u.order = { type: 'gather', x: t.x, y: t.y, target: t.id, resType: t.resType, phase: 'go' };
     if (u.carry > 0 && u.carryType !== t.resType) u.order.phase = 'return';
     u.path = null;
@@ -653,6 +743,7 @@ export class World {
   }
 
   orderBuild(u: Entity, b: Entity) {
+    u.amove = null;
     u.order = { type: 'build', x: b.x, y: b.y, target: b.id };
     u.path = null;
     u.fails = 0;
@@ -686,11 +777,30 @@ export class World {
     const o = u.order;
     if (!o) {
       u.anim = Anim.IDLE;
+      if (u.amove) {
+        // a fight on the march is over: carry on to the destination
+        u.order = { type: 'move', x: u.amove.x, y: u.amove.y, target: 0 };
+        u.path = null;
+        return;
+      }
+      if (!u.guard) u.guard = { x: u.x, y: u.y };
       if ((this.tick + u.id) % 8 === 0) this.autoAcquire(u);
+      if (!u.order && u.stance === 1 && Math.hypot(u.x - u.guard.x, u.y - u.guard.y) > 1.5 && (this.tick + u.id) % 8 === 4) {
+        // defensive: walk back to post
+        u.order = { type: 'move', x: u.guard.x, y: u.guard.y, target: 0 };
+        u.path = null;
+      }
       return;
     }
     switch (o.type) {
       case 'move':
+        if (u.amove && (this.tick + u.id) % 6 === 0) {
+          const t = this.findEnemyNear(u.owner, u.x, u.y, u.us!.los, true);
+          if (t) {
+            this.orderAttack(u, t, true);
+            break;
+          }
+        }
         if (!u.path) {
           this.pathToPoint(u, o.x, o.y);
           const np = u.path as Vec2[] | null;
@@ -699,7 +809,10 @@ export class World {
             break;
           }
         }
-        if (this.followPath(u) && u.path) this.idle(u);
+        if (this.followPath(u) && u.path) {
+          this.idle(u);
+          u.amove = null;
+        }
         break;
       case 'attack':
         this.doAttack(u, o);
@@ -715,8 +828,9 @@ export class World {
 
   private autoAcquire(u: Entity) {
     if (u.type === 'villager') return;
-    const t = this.findEnemyNear(u.owner, u.x, u.y, u.us!.los, true);
-    if (t) this.orderAttack(u, t, true);
+    const hold = u.stance === 2;
+    const t = this.findEnemyNear(u.owner, u.x, u.y, hold ? u.us!.range + 1.2 : u.us!.los, true);
+    if (t && (!hold || this.distTo(u, t) <= u.us!.range + 0.3)) this.orderAttack(u, t, true);
   }
 
   /** nearest visible enemy unit (or building if none) */
@@ -776,10 +890,18 @@ export class World {
       o.x = t.x;
       o.y = t.y;
     }
-    // auto-acquired targets: don't chase forever
-    if (o.auto && Math.hypot(t.x - u.x, t.y - u.y) > u.us!.los + 3) {
-      this.idle(u);
-      return;
+    // auto-acquired targets: don't chase forever; stances limit it further
+    if (o.auto) {
+      const st = u.amove ? 0 : (u.stance ?? 0);
+      const g = u.guard;
+      const tooFar =
+        st === 2 ? this.distTo(u, t) > u.us!.range + 0.3
+        : st === 1 && g ? Math.hypot(t.x - g.x, t.y - g.y) > u.us!.los + 1
+        : Math.hypot(t.x - u.x, t.y - u.y) > u.us!.los + 3;
+      if (tooFar) {
+        this.idle(u);
+        return;
+      }
     }
     const range = u.us!.range;
     if (this.approach(u, t, range)) {
@@ -1100,7 +1222,9 @@ export class World {
       else if (t && t.kind === 'building' && t.owner === b.owner && !t.built && type === 'villager') this.orderBuild(u, t);
       else if (t && this.isEnemy(b.owner, t.owner)) this.orderAttack(u, t, false);
       else {
-        u.order = { type: 'move', x: b.rally.x + (Math.random() - 0.5) * 0.6, y: b.rally.y + (Math.random() - 0.5) * 0.6, target: 0 };
+        const rx = b.rally.x + (((u.id * 37) % 13) / 13 - 0.5) * 1.2, ry = b.rally.y + (((u.id * 71) % 11) / 11 - 0.5) * 1.2;
+        u.order = { type: 'move', x: rx, y: ry, target: 0 };
+        u.guard = { x: rx, y: ry };
       }
     }
   }
