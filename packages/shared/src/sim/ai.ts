@@ -45,6 +45,8 @@ interface Profile {
   maxArmy: number;
   /** ticks between decisions (faster = sharper reactions) */
   think?: number;
+  /** splits villagers by age and stockpiles, and rebalances them often */
+  smartEco?: boolean;
 }
 
 const ECO: TechId[] = ['iron_axe', 'mining_picks', 'bullock_carts', 'irrigation', 'bow_saw', 'deep_shafts'];
@@ -53,8 +55,8 @@ const ARMS: TechId[] = ['forging', 'fletching', 'lamellar', 'quilted', 'wootz_st
 export const PROFILES: Record<Difficulty, Profile> = {
   easy: { vills: 16, firstAttack: 540, interval: 170, wave0: 4, waveGrow: 2, counter: 0.15, retreat: false, flee: false, raid: false, focus: false, maxProd: 2, towers: 0, defendR: 12, age2: 16, age3: 99, techs: ['iron_axe'], armyRate: 0.8, maxArmy: 12 },
   normal: { vills: 28, firstAttack: 360, interval: 110, wave0: 7, waveGrow: 3, counter: 0.55, retreat: true, flee: false, raid: false, focus: false, maxProd: 4, towers: 1, defendR: 18, age2: 15, age3: 26, techs: ['iron_axe', 'mining_picks', 'forging', 'bullock_carts', 'fletching', 'lamellar', 'irrigation'], armyRate: 2.6, maxArmy: 60 },
-  hard: { vills: 38, firstAttack: 345, interval: 105, wave0: 8, waveGrow: 3, counter: 0.85, retreat: true, flee: true, raid: true, focus: true, maxProd: 6, towers: 2, defendR: 22, age2: 15, age3: 25, techs: [...ECO.slice(0, 2), 'forging', 'bullock_carts', 'fletching', 'lamellar', 'irrigation', 'quilted', 'bow_saw', 'deep_shafts', 'wootz_steel', 'mail'], armyRate: 3.2, maxArmy: 80 },
-  raja: { vills: 42, firstAttack: 345, interval: 100, wave0: 9, waveGrow: 3, counter: 1, retreat: true, flee: true, raid: true, focus: true, maxProd: 7, towers: 3, defendR: 26, age2: 15, age3: 25, techs: [...ECO.slice(0, 2), 'forging', 'bullock_carts', 'fletching', 'lamellar', 'irrigation', 'quilted', 'bow_saw', 'deep_shafts', 'wootz_steel', 'mail'], armyRate: 3.4, maxArmy: 100, think: 5 },
+  hard: { vills: 38, firstAttack: 345, interval: 105, wave0: 8, waveGrow: 3, counter: 0.85, retreat: true, flee: true, raid: true, focus: true, maxProd: 6, towers: 2, defendR: 22, age2: 15, age3: 25, techs: [...ECO.slice(0, 2), 'forging', 'bullock_carts', 'fletching', 'lamellar', 'irrigation', 'quilted', 'bow_saw', 'deep_shafts', 'wootz_steel', 'mail'], armyRate: 3.2, maxArmy: 80, smartEco: true },
+  raja: { vills: 42, firstAttack: 300, interval: 90, wave0: 10, waveGrow: 3, counter: 1, retreat: true, flee: true, raid: true, focus: true, maxProd: 7, towers: 3, defendR: 26, age2: 13, age3: 25, techs: [...ECO.slice(0, 2), 'forging', 'bullock_carts', 'fletching', 'lamellar', 'irrigation', 'quilted', 'bow_saw', 'deep_shafts', 'wootz_steel', 'mail'], armyRate: 4.2, maxArmy: 110, think: 5, smartEco: true },
 };
 
 const PROD: BuildingType[] = ['barracks', 'archery_range', 'stable'];
@@ -247,22 +249,7 @@ export class AIController {
       if (builders < (b.type === 'town_center' ? 3 : 1) && idle.length) w.orderBuild(idle.shift()!, b);
     }
     const n = villagers.length;
-    const want: Record<ResourceType, number> =
-      n < 10
-        ? { food: 0.6, wood: 0.4, gold: 0, stone: 0 }
-        : n < 18
-          ? { food: 0.48, wood: 0.34, gold: 0.18, stone: 0 }
-          : { food: 0.4, wood: 0.3, gold: 0.22, stone: 0.08 };
-    // lean toward whatever is running short and away from what piles up unspent
-    if (n >= 10) {
-      let sum = 0;
-      for (const rt of Object.keys(want) as ResourceType[]) {
-        const stock = p.res[rt];
-        want[rt] *= stock > 600 ? 0.35 : stock > 350 ? 0.7 : stock < 80 ? 1.5 : 1;
-        sum += want[rt];
-      }
-      for (const rt of Object.keys(want) as ResourceType[]) want[rt] /= sum;
-    }
+    const want: Record<ResourceType, number> = P.smartEco ? this.smartWant(n, p.age, p.res) : this.basicWant(n, p.res);
     const deficit = (rt: ResourceType) => want[rt] * n - counts[rt];
     const pickRes = () => {
       let best: ResourceType = 'food';
@@ -284,11 +271,13 @@ export class AIController {
       }
     }
     // better economies rebalance: move one worker from the most over-staffed resource
-    if (P.counter >= 0.55 && n >= 12 && w.tick % (TICK_RATE * 4) < TICK_RATE / 2) {
+    const every = P.smartEco ? TICK_RATE * 2 : TICK_RATE * 4;
+    if (P.counter >= 0.55 && n >= 12 && w.tick % every < TICK_RATE / 2) {
       const types = Object.keys(want) as ResourceType[];
       const over = types.reduce((a, b) => (deficit(a) < deficit(b) ? a : b));
       const under = types.reduce((a, b) => (deficit(a) > deficit(b) ? a : b));
-      if (deficit(over) < -1.5 && deficit(under) > 1.5) {
+      const gap = P.smartEco ? 1 : 1.5;
+      if (deficit(over) < -gap && deficit(under) > gap) {
         const v = villagers.find((x) => x.order?.type === 'gather' && x.order.resType === over && x.carry < 2);
         const t = v && w.findResource(this.slot, under, v.x, v.y, 45);
         if (v && t) w.orderGather(v, t);
@@ -588,6 +577,40 @@ export class AIController {
     return null;
   }
 
+  /** fixed shares by villager count, nudged by what is running short or piling up */
+  private basicWant(n: number, res: Record<ResourceType, number>): Record<ResourceType, number> {
+    const want: Record<ResourceType, number> =
+      n < 10
+        ? { food: 0.6, wood: 0.4, gold: 0, stone: 0 }
+        : n < 18
+          ? { food: 0.48, wood: 0.34, gold: 0.18, stone: 0 }
+          : { food: 0.4, wood: 0.3, gold: 0.22, stone: 0.08 };
+    if (n >= 10) {
+      for (const rt of Object.keys(want) as ResourceType[]) {
+        const stock = res[rt];
+        want[rt] *= stock > 600 ? 0.35 : stock > 350 ? 0.7 : stock < 80 ? 1.5 : 1;
+      }
+    }
+    return normalize(want);
+  }
+
+  /** shares that follow what the current age spends, and react sooner to stockpiles */
+  private smartWant(n: number, age: number, res: Record<ResourceType, number>): Record<ResourceType, number> {
+    const want: Record<ResourceType, number> =
+      n < 10
+        ? { food: 0.6, wood: 0.4, gold: 0, stone: 0 }
+        : age === 1
+          ? { food: 0.58, wood: 0.36, gold: 0.06, stone: 0 }
+          : { food: 0.42, wood: 0.28, gold: 0.24, stone: 0.06 };
+    if (n >= 10) {
+      for (const rt of Object.keys(want) as ResourceType[]) {
+        const stock = res[rt];
+        want[rt] *= stock > 450 ? 0.25 : stock > 250 ? 0.6 : stock < 100 ? 1.6 : 1;
+      }
+    }
+    return normalize(want);
+  }
+
   private pickBuilder(villagers: Entity[]): Entity | null {
     let best: Entity | null = null;
     for (const v of villagers) {
@@ -641,4 +664,11 @@ export class AIController {
     }
     return best;
   }
+}
+
+function normalize(want: Record<ResourceType, number>): Record<ResourceType, number> {
+  let sum = 0;
+  for (const v of Object.values(want)) sum += v;
+  if (sum > 0) for (const k of Object.keys(want) as ResourceType[]) want[k] /= sum;
+  return want;
 }
