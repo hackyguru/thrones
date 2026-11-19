@@ -67,7 +67,7 @@ export class GameSession {
     const w = this.world;
     w.step();
     for (const ai of this.ais) {
-      if ((w.tick + ai.slot * 5) % (TICK_RATE / 2) === 0) ai.update();
+      if ((w.tick + ai.slot * 3) % ai.thinkTicks === 0) ai.update();
     }
   }
 
@@ -95,6 +95,7 @@ export class GameSession {
     }
     w.changedRes.clear();
     const alive = w.players.map((p) => p.alive);
+    const ages = w.players.map((p) => p.age);
     for (const slot of slots) {
       const p = w.players[slot];
       const ents: EntSnap[] = [];
@@ -108,11 +109,12 @@ export class GameSession {
       }
       out.set(slot, {
         t: w.tick,
-        me: p ? { r: { food: Math.floor(p.res.food), wood: Math.floor(p.res.wood), gold: Math.floor(p.res.gold), stone: Math.floor(p.res.stone) }, pop: p.pop, cap: p.popCap } : null,
+        me: p ? { r: { food: Math.floor(p.res.food), wood: Math.floor(p.res.wood), gold: Math.floor(p.res.gold), stone: Math.floor(p.res.stone) }, pop: p.pop, cap: p.popCap, tc: p.techs.length ? p.techs : undefined } : null,
         e: ents,
         rc: rc.length ? rc : undefined,
         ev: ev.length ? ev : undefined,
         al: alive,
+        ag: ages,
       });
     }
     w.events.length = 0;
@@ -153,10 +155,17 @@ export class GameSession {
     w.occ = new Int32Array(unb64(d.occ).buffer);
     w.block = unb64(d.block);
     w.entities.clear();
+    for (const p of d.players) {
+      // saves from before ages existed: everything was available, so treat them as fully advanced
+      if (!p.techs) {
+        p.techs = ['age2', 'age3'];
+        p.age = 3;
+      }
+    }
     for (const e of d.entities) {
-      const civ = d.players.find((p) => p.slot === e.owner)?.civ;
-      if (civ && e.kind === 'unit') e.us = unitStats(civ, e.type as never, TICK_RATE);
-      if (civ && e.kind === 'building') e.bs = buildingStats(civ, e.type as never);
+      const pl = d.players.find((p) => p.slot === e.owner);
+      if (pl && e.kind === 'unit') e.us = unitStats(pl.civ, e.type as never, TICK_RATE, pl.techs);
+      if (pl && e.kind === 'building') e.bs = buildingStats(pl.civ, e.type as never, pl.techs);
       w.entities.set(e.id, e);
     }
     w.projectiles = d.projectiles;

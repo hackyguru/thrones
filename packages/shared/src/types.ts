@@ -30,6 +30,7 @@ export type BuildingType =
   | 'barracks'
   | 'archery_range'
   | 'stable'
+  | 'blacksmith'
   | 'tower';
 
 export type ResourceNodeType = 'tree' | 'palm' | 'gold_mine' | 'stone_mine' | 'berry_bush';
@@ -62,6 +63,7 @@ export type Command =
   | { c: 'attack'; ids: number[]; target: number }
   | { c: 'build'; ids: number[]; type: BuildingType; tx: number; ty: number }
   | { c: 'train'; building: number; type: UnitType }
+  | { c: 'research'; building: number; tech: string }
   | { c: 'cancel'; building: number; index: number }
   | { c: 'rally'; building: number; x: number; y: number; target?: number }
   | { c: 'stop'; ids: number[] }
@@ -91,8 +93,8 @@ export interface EntSnap {
   g?: ResourceType;
   /** construction progress (buildings, 0..1). Absent when complete. */
   p?: number;
-  /** training queue (owner only): [type, progress] */
-  q?: [UnitType, number][];
+  /** training / research queue (owner only): [unit type or tech id, progress] */
+  q?: [string, number][];
   /** rally point (owner only) */
   r?: [number, number];
   /** farm food remaining */
@@ -107,6 +109,8 @@ export type GameEvent =
   | { e: 'die'; i: number; x: number; y: number; t: string; o: number; k: 0 | 1 }
   | { e: 'built'; i: number; t: string }
   | { e: 'trained'; i: number; t: string }
+  /** a tech finished (owner); age advances are announced to everyone */
+  | { e: 'researched'; t: string; o: number }
   | { e: 'alert'; x: number; y: number }
   | { e: 'defeat'; o: number }
   | { e: 'popcap' };
@@ -115,6 +119,8 @@ export interface PlayerSnap {
   r: Resources;
   pop: number;
   cap: number;
+  /** researched techs */
+  tc?: string[];
 }
 
 export interface Snapshot {
@@ -126,6 +132,8 @@ export interface Snapshot {
   ev?: GameEvent[];
   /** alive flags by slot */
   al: boolean[];
+  /** age by slot */
+  ag?: number[];
 }
 
 export interface PlayerInfo {

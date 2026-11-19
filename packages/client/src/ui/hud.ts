@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import {
-  BUILD_MENU, BUILDINGS, CIVS, PLAYER_COLORS, RESOURCE_NODES, TICK_RATE, Terrain, UNITS, buildingStats, canAfford, trainable, unitStats,
+  AGES, BUILD_MENU, BUILDINGS, CIVS, PLAYER_COLORS, RESOURCE_NODES, TECHS, TICK_RATE, Terrain, UNITS, buildingStats, canAfford, techBlocker, techsAt, trainable, unitStats, type Age, type TechId,
   type BuildingType, type Cost, type GameEvent, type GameOverInfo, type UnitType,
 } from '@thrones/shared';
 import type { Game } from '../game/game';
@@ -23,6 +23,8 @@ interface CmdButton {
   disabled?: boolean;
   /** highlighted (current stance) */
   active?: boolean;
+  /** not available yet (age or prerequisite) */
+  locked?: boolean;
   action: () => void;
 }
 
@@ -66,7 +68,7 @@ export class Hud {
         <div class="res" data-r="gold" title="Gold">${ICONS.gold}<span>0</span></div>
         <div class="res" data-r="stone" title="Stone">${ICONS.stone}<span>0</span></div>
         <div class="res pop" title="Population">${ICONS.pop}<span>0/0</span></div>
-        <div class="top-civ"><span class="emblem">${civ.emblem}</span>${civ.name}</div>
+        <div class="top-civ"><span class="emblem">${civ.emblem}</span><span>${civ.name}<small class="top-age">${AGES[1].name}</small></span></div>
         <div class="top-clock">00:00</div>
         <button class="icon-btn help-btn" title="Controls">?</button>
         <button class="icon-btn speed-btn" title="Game speed">1×</button>
@@ -288,6 +290,7 @@ export class Hud {
   }
 
   private paused = false;
+  private shownAge = 1;
   private async saveGame() {
     const link = this.game.link as unknown as { save?: () => string };
     if (!link.save) return;
@@ -355,6 +358,21 @@ export class Hud {
       case 'trained':
         sfx.trained();
         break;
+      case 'researched': {
+        const def = TECHS[ev.t as TechId];
+        if (!def) break;
+        const age = def.effect.age;
+        if (ev.o === g.you) {
+          this.message(age ? `Your empire has entered the ${AGES[age].name}!` : `${def.name} researched.`, 'good');
+          if (age) sfx.victory();
+          else sfx.built();
+        } else if (age) {
+          const p = g.init.players[ev.o];
+          if (p) this.message(`${p.name} (${CIVS[p.civ].short}) has entered the ${AGES[age].name}.`, 'info');
+        }
+        this.renderPlayers();
+        break;
+      }
       case 'defeat': {
         const p = g.init.players[ev.o];
         if (ev.o === g.you) this.message('You have been defeated.', 'warn');
@@ -371,7 +389,8 @@ export class Hud {
       .map((p) => {
         const c = '#' + PLAYER_COLORS[p.color].hex.toString(16).padStart(6, '0');
         const dead = g.alive.length && !g.alive[p.slot];
-        return `<div class="pl ${dead ? 'dead' : ''}"><i style="background:${c}"></i>${escapeHtml(p.name)} <small>${CIVS[p.civ].short}</small></div>`;
+        const age = ['', 'I', 'II', 'III'][g.ages[p.slot] ?? 1];
+        return `<div class="pl ${dead ? 'dead' : ''}"><i style="background:${c}"></i>${escapeHtml(p.name)} <small>${CIVS[p.civ].short} · ${age}</small></div>`;
       })
       .join('');
   }
@@ -391,6 +410,12 @@ export class Hud {
       pop.textContent = `${me.pop}/${me.cap}`;
       pop.parentElement!.classList.toggle('capped', me.pop >= me.cap);
       this.q('.top-clock').textContent = fmtTime(g.tick / TICK_RATE);
+      const age = (g.ages[g.you] ?? 1) as Age;
+      if (age !== this.shownAge) {
+        this.shownAge = age;
+        this.q('.top-age').textContent = AGES[age].name;
+        this.renderPlayers();
+      }
       this.renderSelection();
     }
     if (this.miniTimer <= 0) {
@@ -406,7 +431,9 @@ export class Hud {
     if (!b) return;
     if (b.disabled) {
       sfx.error();
-      if (b.cost && !canAfford(this.game.me.r, b.cost)) this.message('Not enough resources.', 'warn');
+      const req = /tip-req">([^<]+)</.exec(b.desc ?? '')?.[1];
+      if (req) this.message(req + '.', 'warn');
+      else if (b.cost && !canAfford(this.game.me.r, b.cost)) this.message('Not enough resources.', 'warn');
       return;
     }
     sfx.click();
@@ -432,6 +459,8 @@ export class Hud {
     const pc = g.colorOf(g.you);
     const own = sel.filter((e) => e.owner === g.you);
     const out: CmdButton[] = [];
+    const myAge = (g.ages[g.you] ?? 1) as Age;
+    const techs = g.me.tc ?? [];
     if (!own.length) return out;
     const units = own.filter((e) => e.kind === 0);
     if (units.length) {
@@ -440,9 +469,10 @@ export class Hud {
         out.push(moveBtn);
         BUILD_MENU.forEach((t, i) => {
           const bs = buildingStats(civ, t);
+          const locked = bs.def.age > myAge;
           out.push({
             key: GRID_KEYS[i], icon: `<img src="${portrait('building', t, civ, pc)}"/>`, title: `Build ${bs.def.name}`,
-            desc: `<i>${bs.def.native}</i> — ${bs.def.description}`, cost: bs.cost, disabled: !canAfford(g.me.r, bs.cost),
+            desc: `<i>${bs.def.native}</i> — ${bs.def.description}${locked ? `<div class="tip-req">Requires the ${AGES[bs.def.age].name}</div>` : ''}`, cost: bs.cost, disabled: locked || !canAfford(g.me.r, bs.cost), locked,
             action: () => this.input.startPlacing(t),
           });
         });
@@ -465,22 +495,52 @@ export class Hud {
       return out;
     }
     const sameType = own.filter((e) => e.type === b.type);
-    trainable(civ, b.type as BuildingType).forEach((t, i) => {
-      const us = unitStats(civ, t);
+    const trains = trainable(civ, b.type as BuildingType);
+    trains.forEach((t, i) => {
+      const us = unitStats(civ, t, TICK_RATE, techs);
       const def = UNITS[t];
+      const locked = def.age > myAge;
       out.push({
         key: GRID_KEYS[i], icon: `<img src="${portrait('unit', t, civ, pc)}"/>`,
         title: `Train ${def.name}${def.uniqueTo ? ' ★' : ''}`,
-        desc: `<i>${def.native}</i> — ${def.description}<div class="tip-stats">${ICONS.sword}${us.attack} ${ICONS.shield}${us.armorMelee}/${us.armorPierce} ♥${us.maxHp}${def.ranged ? ` ${ICONS.bow}${us.range}` : ''}</div>`,
+        desc: `<i>${def.native}</i> — ${def.description}<div class="tip-stats">${ICONS.sword}${us.attack} ${ICONS.shield}${us.armorMelee}/${us.armorPierce} ♥${us.maxHp}${def.ranged ? ` ${ICONS.bow}${us.range}` : ''}</div>${locked ? `<div class="tip-req">Requires the ${AGES[def.age].name}</div>` : ''}`,
         cost: us.cost,
-        disabled: !canAfford(g.me.r, us.cost),
+        locked,
+        disabled: locked || !canAfford(g.me.r, us.cost),
         action: () => {
           const target = sameType.reduce((a, c) => ((c.q?.length ?? 0) < (a.q?.length ?? 0) ? c : a), sameType[0]);
           g.link.send({ c: 'train', building: target.id, type: t });
         },
       });
     });
+    // research: hide what is done, show what's next (locked ones explain why)
+    const queued: string[] = this.queuedTechsElsewhere(b.type as BuildingType);
+    let k = trains.length;
+    for (const id of techsAt(b.type as BuildingType)) {
+      if (techs.includes(id) || k >= GRID_KEYS.length - 1) continue;
+      const def = TECHS[id];
+      if (def.requires && !techs.includes(def.requires) && !queued.includes(def.requires)) continue;
+      const why = techBlocker(id, techs, queued);
+      const busy = why === 'Already being researched' || why === 'Already advancing';
+      out.push({
+        key: GRID_KEYS[k++], icon: ICONS[def.icon], title: def.name,
+        desc: `${def.description}<div class="tip-time">${def.time}s</div>${why ? `<div class="tip-req">${why}</div>` : ''}`,
+        cost: def.cost,
+        locked: !!why && !busy,
+        disabled: !!why || !canAfford(g.me.r, def.cost),
+        active: busy,
+        action: () => g.link.send({ c: 'research', building: b.id, tech: id }),
+      });
+    }
     out.push({ key: 'V', icon: ICONS.trash, title: 'Delete building', action: () => g.link.send({ c: 'delete', ids: [b.id] }) });
+    return out;
+  }
+
+  /** tech ids queued in my other buildings (so we don't offer them twice) */
+  private queuedTechsElsewhere(_type: BuildingType): string[] {
+    const g = this.game;
+    const out: string[] = [];
+    for (const e of g.ents.values()) if (e.owner === g.you && e.kind === 1 && e.q) for (const [t] of e.q) if (t in TECHS) out.push(t);
     return out;
   }
 
@@ -490,7 +550,7 @@ export class Hud {
     const sel = this.input.selected();
     // command card (re-render only on change)
     const buttons = this.buildButtons(sel);
-    const sig = buttons.map((b) => b.key + b.title + (b.disabled ? 0 : 1) + (b.active ? 'a' : '')).join('|');
+    const sig = buttons.map((b) => b.key + b.title + (b.disabled ? 0 : 1) + (b.active ? 'a' : '') + (b.locked ? 'l' : '')).join('|');
     if (sig !== this.cardSig) {
       this.cardSig = sig;
       this.buttons = buttons;
@@ -498,7 +558,7 @@ export class Hud {
         const i = buttons.findIndex((b) => b.key === k);
         if (i < 0) return `<div class="cmd empty"></div>`;
         const b = buttons[i];
-        return `<button class="cmd ${b.disabled ? 'disabled' : ''} ${b.active ? 'active' : ''}" data-i="${i}">${b.icon}<kbd>${k}</kbd></button>`;
+        return `<button class="cmd ${b.disabled ? 'disabled' : ''} ${b.active ? 'active' : ''} ${b.locked ? 'locked' : ''}" data-i="${i}">${b.icon}<kbd>${k}</kbd></button>`;
       }).join('');
     }
     // selection panel
@@ -539,24 +599,28 @@ export class Hud {
     const hpPct = (e.hp / e.m) * 100;
     let name: string, native: string, stats = '', extra = '';
     if (e.kind === 0) {
-      const us = unitStats(civ, e.type as UnitType);
+      const us = unitStats(civ, e.type as UnitType, TICK_RATE, e.owner === g.you ? g.me.tc : undefined);
       const def = us.def;
       name = def.name + (def.uniqueTo ? ' <span class="uq">★ Unique</span>' : '');
       native = def.native;
       stats = `<span>${ICONS.sword}${us.attack}</span><span>${ICONS.shield}${us.armorMelee}/${us.armorPierce}</span>${def.ranged ? `<span>${ICONS.bow}${us.range}</span>` : ''}<span>${ICONS.boot}${us.speed.toFixed(1)}</span>`;
       if (e.c > 0 && e.ct) extra = `<div class="carry">Carrying ${ICONS[e.ct]} ${e.c}</div>`;
     } else {
-      const bs = buildingStats(civ, e.type as BuildingType);
+      const bs = buildingStats(civ, e.type as BuildingType, e.owner === g.you ? g.me.tc : undefined);
       name = bs.def.name;
       native = bs.def.native;
-      if (bs.def.attack) stats += `<span>${ICONS.sword}${bs.def.attack.damage}</span><span>${ICONS.bow}${bs.attackRange}</span>`;
+      if (bs.def.attack) stats += `<span>${ICONS.sword}${bs.attackDamage}</span><span>${ICONS.bow}${bs.attackRange}</span>`;
       stats += `<span>${ICONS.shield}${bs.def.armor.melee}/${bs.def.armor.pierce}</span>`;
       if (bs.def.pop) stats += `<span>${ICONS.pop}+${bs.def.pop}</span>`;
       if (e.p !== undefined) extra = `<div class="progress"><i style="width:${e.p * 100}%"></i><b>Under construction ${Math.floor(e.p * 100)}%</b></div>`;
       else if (e.type === 'farm' && e.fa !== undefined) extra = `<div class="carry">${ICONS.food} ${e.fa} food remaining</div>`;
       if (e.q?.length && e.owner === g.you) {
         extra += `<div class="queue">${e.q
-          .map(([t, p], i) => `<div class="q-item" data-q="${e.id}:${i}" title="Click to cancel"><img src="${portrait('unit', t, civ, pc)}"/>${i === 0 ? `<i style="height:${(1 - p) * 100}%"></i>` : ''}</div>`)
+          .map(([t, p], i) => {
+            const tech = TECHS[t as TechId];
+            const icon = tech ? `<span class="q-tech">${ICONS[tech.icon]}</span>` : `<img src="${portrait('unit', t, civ, pc)}"/>`;
+            return `<div class="q-item" data-q="${e.id}:${i}" title="${tech ? tech.name + ' — click to cancel' : 'Click to cancel'}">${icon}${i === 0 ? `<i style="height:${(1 - p) * 100}%"></i>` : ''}</div>`;
+          })
           .join('')}</div>`;
       }
     }

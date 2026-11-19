@@ -2,8 +2,10 @@ import { TICK_RATE } from '../constants';
 import { CIVS } from '../data/civs';
 import { buildingStats, canAfford, trainable, unitStats } from '../data/stats';
 import { UNITS } from '../data/units';
+import { BUILDINGS } from '../data/buildings';
+import { TECHS, techBlocker, type TechId } from '../data/techs';
 import { mulberry32, type Rng } from '../rng';
-import type { BuildingType, CivId, Difficulty, ResourceType, UnitType } from '../types';
+import type { BuildingType, CivId, Cost, Difficulty, ResourceType, UnitType } from '../types';
 import type { Entity, World } from './world';
 
 /**
@@ -32,13 +34,27 @@ interface Profile {
   towers: number;
   /** base defense radius */
   defendR: number;
+  /** villager counts at which it advances to age II / III */
+  age2: number;
+  age3: number;
+  /** upgrades it researches, in priority order */
+  techs: TechId[];
+  /** standing army it keeps per minute after minute 4 */
+  armyRate: number;
+  /** most soldiers it will field */
+  maxArmy: number;
+  /** ticks between decisions (faster = sharper reactions) */
+  think?: number;
 }
 
-const PROFILES: Record<Difficulty, Profile> = {
-  easy: { vills: 16, firstAttack: 540, interval: 170, wave0: 4, waveGrow: 2, counter: 0.15, retreat: false, flee: false, raid: false, focus: false, maxProd: 2, towers: 0, defendR: 12 },
-  normal: { vills: 28, firstAttack: 360, interval: 110, wave0: 7, waveGrow: 3, counter: 0.55, retreat: true, flee: false, raid: false, focus: false, maxProd: 4, towers: 1, defendR: 18 },
-  hard: { vills: 38, firstAttack: 290, interval: 90, wave0: 9, waveGrow: 4, counter: 0.85, retreat: true, flee: true, raid: true, focus: true, maxProd: 6, towers: 2, defendR: 22 },
-  raja: { vills: 46, firstAttack: 240, interval: 75, wave0: 10, waveGrow: 4, counter: 1, retreat: true, flee: true, raid: true, focus: true, maxProd: 8, towers: 3, defendR: 26 },
+const ECO: TechId[] = ['iron_axe', 'mining_picks', 'bullock_carts', 'irrigation', 'bow_saw', 'deep_shafts'];
+const ARMS: TechId[] = ['forging', 'fletching', 'lamellar', 'quilted', 'wootz_steel', 'mail'];
+
+export const PROFILES: Record<Difficulty, Profile> = {
+  easy: { vills: 16, firstAttack: 540, interval: 170, wave0: 4, waveGrow: 2, counter: 0.15, retreat: false, flee: false, raid: false, focus: false, maxProd: 2, towers: 0, defendR: 12, age2: 16, age3: 99, techs: ['iron_axe'], armyRate: 0.8, maxArmy: 12 },
+  normal: { vills: 28, firstAttack: 360, interval: 110, wave0: 7, waveGrow: 3, counter: 0.55, retreat: true, flee: false, raid: false, focus: false, maxProd: 4, towers: 1, defendR: 18, age2: 15, age3: 26, techs: ['iron_axe', 'mining_picks', 'forging', 'bullock_carts', 'fletching', 'lamellar', 'irrigation'], armyRate: 2.6, maxArmy: 60 },
+  hard: { vills: 38, firstAttack: 345, interval: 105, wave0: 8, waveGrow: 3, counter: 0.85, retreat: true, flee: true, raid: true, focus: true, maxProd: 6, towers: 2, defendR: 22, age2: 15, age3: 25, techs: [...ECO.slice(0, 2), 'forging', 'bullock_carts', 'fletching', 'lamellar', 'irrigation', 'quilted', 'bow_saw', 'deep_shafts', 'wootz_steel', 'mail'], armyRate: 3.2, maxArmy: 80 },
+  raja: { vills: 42, firstAttack: 345, interval: 100, wave0: 9, waveGrow: 3, counter: 1, retreat: true, flee: true, raid: true, focus: true, maxProd: 7, towers: 3, defendR: 26, age2: 15, age3: 25, techs: [...ECO.slice(0, 2), 'forging', 'bullock_carts', 'fletching', 'lamellar', 'irrigation', 'quilted', 'bow_saw', 'deep_shafts', 'wootz_steel', 'mail'], armyRate: 3.4, maxArmy: 100, think: 5 },
 };
 
 const PROD: BuildingType[] = ['barracks', 'archery_range', 'stable'];
@@ -86,6 +102,11 @@ export class AIController {
     this.p = PROFILES[difficulty] ?? PROFILES.normal;
     this.nextAttack = TICK_RATE * this.p.firstAttack;
     this.nextRaid = TICK_RATE * 420;
+  }
+
+  /** how often the session should call update() */
+  get thinkTicks() {
+    return this.p.think ?? TICK_RATE / 2;
   }
 
   save(): AISave {
@@ -139,13 +160,24 @@ export class AIController {
     const unfinished = [...buildings.values()].flat().filter((b) => !b.built);
     const prodCount = PROD.reduce((n, t) => n + list(t).length, 0);
 
-    // --- villagers ---
-    if (tc && tc.built && tc.queue.length < 2 && villagers.length + tc.queue.length < P.vills && p.res.food >= 50) {
+    // --- villagers (paused while saving food for the next age, as a good player would) ---
+    const nextAge: TechId | null = p.age === 1 ? 'age2' : p.age === 2 ? 'age3' : null;
+    const ageReady = !!nextAge && villagers.length >= (nextAge === 'age2' ? P.age2 : P.age3) && !techBlocker(nextAge, p.techs, w.queuedTechs(this.slot));
+    // keep a standing army while saving up, and never save while the base is under attack
+    const minArmy = Math.floor(P.wave0 * (p.age === 1 ? 0.5 : 1.2));
+    const underAttack = !!w.findEnemyNear(this.slot, home.x, home.y, P.defendR, false);
+    const saving = ageReady && military.length >= minArmy && !underAttack;
+    // a standing army that grows with game time comes before more villagers
+    const armyFloor = Math.min(50, Math.max(0, Math.floor((w.tick / TICK_RATE / 60 - 3) * P.armyRate)));
+    const armyBehind = military.length < armyFloor;
+    if (tc && tc.built && !saving && tc.queue.length < 2 && villagers.length + tc.queue.length < P.vills && p.res.food >= (armyBehind ? 140 : 50)) {
       w.command(this.slot, { c: 'train', building: tc.id, type: 'villager' });
     }
 
     // --- construction ---
+    const ok = (t: BuildingType) => BUILDINGS[t].age <= p.age;
     const tryBuild = (type: BuildingType, near: { x: number; y: number }, minR: number, maxR: number) => {
+      if (!ok(type)) return false;
       const bs = buildingStats(civ, type);
       if (!canAfford(p.res, bs.cost)) return false;
       const spot = w.findPlacement(type, near.x, near.y, minR, maxR, this.rng);
@@ -162,6 +194,10 @@ export class AIController {
       tryBuild('house', home, 4, 15);
     }
     const best = this.bestUnits(civ);
+    // drop-off sites near busy, distant resources come first: walking is the biggest economic loss
+    if (villagers.length >= 7 && !unfinished.some((b) => b.type === 'storehouse') && list('storehouse').length < 2 + Math.floor(villagers.length / 10)) this.expand(tryBuild, villagers, home);
+    const nvAll = villagers.length;
+    const farmWant = this.berriesLeft(home) < 3 ? Math.floor(nvAll * 0.35) : nvAll >= 14 ? Math.floor((nvAll - 10) * 0.3) : 0;
     if (unfinished.length < 2 + (P.maxProd > 4 ? 1 : 0)) {
       const nv = villagers.length;
       const has = (t: BuildingType) => list(t).length;
@@ -169,15 +205,16 @@ export class AIController {
       else if (nv >= 6 && has('storehouse') < 1) this.buildStorehouse(tryBuild, home, 'wood');
       else if (nv >= 9 && has('barracks') < 1) tryBuild('barracks', home, 6, 14);
       else if (nv >= 12 && has('storehouse') < 2) this.buildStorehouse(tryBuild, home, 'gold');
-      else if (nv >= 12 && has('farm') < Math.floor(nv * 0.3) && this.berriesLeft(home) < 3) tryBuild('farm', home, 3, 10);
-      else if (nv >= 14 && has('archery_range') < 1) tryBuild('archery_range', home, 6, 15);
-      else if (nv >= 17 && has('stable') < 1) tryBuild('stable', home, 6, 15);
-      else if (nv >= 20 && has('tower') < P.towers) tryBuild('tower', this.towardEnemy(home, 7), 0, 5);
+      else if (has('farm') < farmWant) tryBuild('farm', home, 3, 11);
+      else if (nv >= 14 && ok('archery_range') && has('archery_range') < 1) tryBuild('archery_range', home, 6, 15);
+      else if (nv >= 17 && ok('stable') && has('stable') < 1) tryBuild('stable', home, 6, 15);
+      else if (nv >= 18 && ok('blacksmith') && has('blacksmith') < 1 && P.techs.some((t) => TECHS[t].at === 'blacksmith')) tryBuild('blacksmith', home, 5, 14);
+      else if (nv >= 20 && ok('tower') && has('tower') < P.towers) tryBuild('tower', this.towardEnemy(home, 7), 0, 5);
       else if (!this.expand(tryBuild, villagers, home) && nv >= 22 && prodCount < P.maxProd) {
         // spend a growing bank on more production of what the army needs most
         const r = p.res;
         if (r.food + r.gold + r.wood > 900 || prodCount < 3) {
-          const want = best[0] ? UNITS[best[0]].trainedAt : 'barracks';
+          const want = best.map((u) => UNITS[u].trainedAt).find(ok) ?? 'barracks';
           tryBuild(want, home, 6, 18);
         }
       }
@@ -215,7 +252,17 @@ export class AIController {
         ? { food: 0.6, wood: 0.4, gold: 0, stone: 0 }
         : n < 18
           ? { food: 0.48, wood: 0.34, gold: 0.18, stone: 0 }
-          : { food: 0.4, wood: 0.28, gold: 0.24, stone: 0.08 };
+          : { food: 0.4, wood: 0.3, gold: 0.22, stone: 0.08 };
+    // lean toward whatever is running short and away from what piles up unspent
+    if (n >= 10) {
+      let sum = 0;
+      for (const rt of Object.keys(want) as ResourceType[]) {
+        const stock = p.res[rt];
+        want[rt] *= stock > 600 ? 0.35 : stock > 350 ? 0.7 : stock < 80 ? 1.5 : 1;
+        sum += want[rt];
+      }
+      for (const rt of Object.keys(want) as ResourceType[]) want[rt] /= sum;
+    }
     const deficit = (rt: ResourceType) => want[rt] * n - counts[rt];
     const pickRes = () => {
       let best: ResourceType = 'food';
@@ -248,16 +295,43 @@ export class AIController {
       }
     }
 
+    // --- ages and upgrades ---
+    const queued = w.queuedTechs(this.slot);
+    let saveFor: Cost | null = null;
+    const next: TechId | null = p.age === 1 ? 'age2' : p.age === 2 ? 'age3' : null;
+    if (tc && tc.built && next && villagers.length >= (next === 'age2' ? P.age2 : P.age3) && !techBlocker(next, p.techs, queued)) {
+      if (canAfford(p.res, TECHS[next].cost) && tc.queue.length < 2) w.command(this.slot, { c: 'research', building: tc.id, tech: next });
+      else if (saving) saveFor = TECHS[next].cost;
+    }
+    const leaves = (cost: Cost) => {
+      if (!canAfford(p.res, cost)) return false;
+      if (!saveFor) return true;
+      for (const [k, v] of Object.entries(cost) as [ResourceType, number][]) if (v && p.res[k] - v < (saveFor[k] ?? 0)) return false;
+      return true;
+    };
+    if (villagers.length >= 8) {
+      for (const id of P.techs) {
+        if (techBlocker(id, p.techs, queued)) continue;
+        const def = TECHS[id];
+        const at = list(def.at).find((b) => b.built && b.queue.length < (def.at === 'town_center' ? 2 : 1));
+        if (at && leaves(def.cost)) {
+          w.command(this.slot, { c: 'research', building: at.id, tech: id });
+          break;
+        }
+      }
+    }
+
     // --- military production ---
-    const reserveFood = villagers.length < P.vills ? 50 : 0;
+    const reserveFood = villagers.length < P.vills && !armyBehind ? 50 : 0;
+    const armyCap = military.length + PROD.reduce((n, t) => n + list(t).reduce((k, b) => k + b.queue.length, 0), 0) >= P.maxArmy;
     for (const t of PROD) {
       for (const b of list(t)) {
-        if (!b.built || b.queue.length >= 2) continue;
+        if (armyCap || !b.built || b.queue.length >= 2) continue;
         const opts = trainable(civ, t);
         const ranked = this.bestUnits(civ, opts);
         for (const choice of ranked) {
           const cost = unitStats(civ, choice).cost;
-          if (p.res.food - (cost.food ?? 0) < reserveFood || !canAfford(p.res, cost)) continue;
+          if (p.res.food - (cost.food ?? 0) < reserveFood || !leaves(cost)) continue;
           if (!b.rally) {
             const s = this.towardEnemy(home, 6);
             w.command(this.slot, { c: 'rally', building: b.id, x: s.x, y: s.y });
@@ -418,7 +492,8 @@ export class AIController {
 
   /** trainable units ranked by how well they answer the enemy army we've seen */
   private bestUnits(c: CivId, opts?: UnitType[]): UnitType[] {
-    const options = opts ?? PROD.flatMap((t) => trainable(c, t));
+    const age = this.w.players[this.slot]?.age ?? 1;
+    const options = (opts ?? PROD.flatMap((t) => trainable(c, t))).filter((u) => UNITS[u].age <= age);
     const counts = new Map<string, number>();
     let total = 0;
     for (const s of this.seen.values()) {
@@ -449,14 +524,15 @@ export class AIController {
     const sites = new Map<string, { x: number; y: number; n: number }>();
     for (const v of villagers) {
       const o = v.order;
-      if (o?.type !== 'gather' || o.resType === 'food') continue;
+      if (o?.type !== 'gather') continue;
       const t = w.entities.get(o.target);
       if (!t || t.kind !== 'resource') continue;
+      // distance from the resource to the nearest drop-off's edge
       let near = Infinity;
       for (const e of w.entities.values()) {
-        if (e.kind === 'building' && e.owner === this.slot && e.bs!.def.dropoff.includes(o.resType!)) near = Math.min(near, Math.hypot(e.x - t.x, e.y - t.y));
+        if (e.kind === 'building' && e.owner === this.slot && e.bs!.def.dropoff.includes(o.resType!)) near = Math.min(near, Math.hypot(e.x - t.x, e.y - t.y) - e.size / 2);
       }
-      if (near < 9) continue;
+      if (near < (o.resType === 'food' ? 4.5 : 6)) continue;
       const key = `${Math.floor(t.x / 8)},${Math.floor(t.y / 8)}`;
       const s = sites.get(key) ?? { x: t.x, y: t.y, n: 0 };
       s.n++;

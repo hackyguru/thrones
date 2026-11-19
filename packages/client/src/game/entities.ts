@@ -26,7 +26,7 @@ export interface CEnt {
   ct?: ResourceType;
   g?: ResourceType;
   p?: number;
-  q?: [UnitType, number][];
+  q?: [string, number][];
   r?: [number, number];
   fa?: number;
   /** stance (own units) */

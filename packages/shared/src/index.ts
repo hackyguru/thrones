@@ -6,6 +6,7 @@ export * from './data/units';
 export * from './data/buildings';
 export * from './data/civs';
 export * from './data/stats';
+export * from './data/techs';
 export { generateMap } from './sim/mapgen';
 export { Pathfinder } from './sim/pathfinding';
 export { World } from './sim/world';

@@ -31,6 +31,8 @@ export class Game {
   dying: { e: CEnt; until: number }[] = [];
   me: PlayerSnap = { r: { food: 0, wood: 0, gold: 0, stone: 0 }, pop: 0, cap: 0 };
   alive: boolean[] = [];
+  /** age of every player */
+  ages: number[] = [];
   selection = new Set<number>();
   resSelection: number | null = null;
   you: number;
@@ -134,6 +136,7 @@ export class Game {
     this.tick = s.t;
     if (s.me) this.me = s.me;
     this.alive = s.al;
+    if (s.ag) this.ages = s.ag;
     const seen = new Set<number>();
     for (const es of s.e) {
       seen.add(es.i);

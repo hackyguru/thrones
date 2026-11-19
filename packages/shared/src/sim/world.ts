@@ -1,8 +1,9 @@
 import {
-  CARRY_CAPACITY, INTERACT_RANGE, MAX_QUEUE, POP_HARD_CAP, PROJECTILE_SPEED, START_RESOURCES, TICK_RATE, Terrain,
+  INTERACT_RANGE, MAX_QUEUE, POP_HARD_CAP, PROJECTILE_SPEED, START_RESOURCES, TICK_RATE, Terrain,
 } from '../constants';
 import { BUILDINGS, RESOURCE_NODES } from '../data/buildings';
-import { buildingStats, canAfford, gatherRate, pay, trainable, unitStats, type BuildingStats, type UnitStats } from '../data/stats';
+import { buildingStats, canAfford, carryCapacity, gatherRate, pay, trainable, unitStats, type BuildingStats, type UnitStats } from '../data/stats';
+import { TECHS, techBlocker, techMods, techsAt, type TechId } from '../data/techs';
 import { UNITS } from '../data/units';
 import {
   Anim, type AnimCode, type BuildingType, type Command, type EntityKind, type GameEvent, type PlayerInfo,
@@ -61,7 +62,8 @@ export interface Entity {
   built: boolean;
   progress: number;
   builders: number;
-  queue: { type: UnitType; progress: number; started: boolean }[];
+  /** training or research; tech items have tech = true and type = TechId */
+  queue: { type: UnitType; progress: number; started: boolean; tech?: boolean }[];
   rally: { x: number; y: number; target: number } | null;
   // resource / farm
   resType: ResourceType | null;
@@ -77,6 +79,8 @@ export interface SimPlayer extends PlayerInfo {
   stats: PlayerStats;
   lastAlert: number;
   lastPopWarn: number;
+  age: number;
+  techs: string[];
 }
 
 export interface RoutedEvent {
@@ -151,6 +155,8 @@ export class World {
       stats: emptyStats(),
       lastAlert: -1000,
       lastPopWarn: -1000,
+      age: 1,
+      techs: [],
     }));
     this.multiPlayerStart = players.length > 1;
     for (const r of map.resources) this.spawnResource(r.type, r.x, r.y);
@@ -248,7 +254,7 @@ export class World {
 
   spawnUnit(owner: number, type: UnitType, x: number, y: number): Entity {
     const p = this.players[owner];
-    const us = unitStats(p.civ, type, TICK_RATE);
+    const us = unitStats(p.civ, type, TICK_RATE, p.techs);
     const e = this.base('unit', type, owner, x, y);
     e.us = us;
     e.hp = e.maxHp = us.maxHp;
@@ -259,7 +265,7 @@ export class World {
 
   placeBuilding(owner: number, type: BuildingType, tx: number, ty: number, built: boolean): Entity {
     const p = this.players[owner];
-    const bs = buildingStats(p.civ, type);
+    const bs = buildingStats(p.civ, type, p.techs);
     const size = bs.def.size;
     const e = this.base('building', type, owner, tx + size / 2, ty + size / 2);
     e.tx = tx;
@@ -272,7 +278,7 @@ export class World {
     e.hp = built ? bs.maxHp : 1;
     if (type === 'farm') {
       e.resType = 'food';
-      e.amount = bs.def.food ?? 300;
+      e.amount = Math.round((bs.def.food ?? 300) * (1 + techMods(p.techs).farmFood));
     }
     this.entities.set(e.id, e);
     for (let y = ty; y < ty + size; y++)
@@ -438,6 +444,12 @@ export class World {
       const wp = u.path[u.pathIdx];
       const dx = wp.x - u.x, dy = wp.y - u.y;
       const d = Math.hypot(dx, dy);
+      // intermediate waypoints only need to be passed near: units crowding the same tile centre
+      // would otherwise shove each other off it forever
+      if (d < 0.45 && u.pathIdx < u.path.length - 1 && d > step) {
+        u.pathIdx++;
+        continue;
+      }
       if (d > 1e-4) u.facing = Math.atan2(dy, dx);
       if (d <= step) {
         u.x = wp.x;
@@ -555,8 +567,8 @@ export class World {
       case 'build': {
         const vills = ownUnits(cmd.ids).filter((u) => u.type === 'villager');
         if (!vills.length) return;
-        const bs = buildingStats(p.civ, cmd.type);
-        if (!bs || !this.canPlace(cmd.type, cmd.tx | 0, cmd.ty | 0)) return;
+        const bs = buildingStats(p.civ, cmd.type, p.techs);
+        if (!bs || bs.def.age > p.age || !this.canPlace(cmd.type, cmd.tx | 0, cmd.ty | 0)) return;
         if (!canAfford(p.res, bs.cost)) return;
         pay(p.res, bs.cost);
         const b = this.placeBuilding(slot, cmd.type, cmd.tx | 0, cmd.ty | 0, false);
@@ -567,11 +579,23 @@ export class World {
         const b = this.entities.get(cmd.building);
         if (!b || b.kind !== 'building' || b.owner !== slot || !b.built) return;
         if (!trainable(p.civ, b.type as BuildingType).includes(cmd.type)) return;
+        if (UNITS[cmd.type].age > p.age) return;
         if (b.queue.length >= MAX_QUEUE) return;
         const us = unitStats(p.civ, cmd.type, TICK_RATE);
         if (!canAfford(p.res, us.cost)) return;
         pay(p.res, us.cost);
         b.queue.push({ type: cmd.type, progress: 0, started: false });
+        break;
+      }
+      case 'research': {
+        const b = this.entities.get(cmd.building);
+        const id = cmd.tech as TechId;
+        if (!b || b.kind !== 'building' || b.owner !== slot || !b.built || !TECHS[id]) return;
+        if (!techsAt(b.type as BuildingType).includes(id)) return;
+        if (techBlocker(id, p.techs, this.queuedTechs(slot))) return;
+        if (b.queue.length >= MAX_QUEUE || !canAfford(p.res, TECHS[id].cost)) return;
+        pay(p.res, TECHS[id].cost);
+        b.queue.push({ type: id as never, progress: 0, started: true, tech: true });
         break;
       }
       case 'cancel': {
@@ -580,7 +604,7 @@ export class World {
         const q = b.queue[cmd.index];
         if (!q) return;
         b.queue.splice(cmd.index, 1);
-        pay(p.res, unitStats(p.civ, q.type, TICK_RATE).cost, 1);
+        pay(p.res, this.queueCost(p, q), 1);
         break;
       }
       case 'rally': {
@@ -994,7 +1018,7 @@ export class World {
       else kp.stats.razed++;
     }
     // refund queued units when a building dies
-    if (e.kind === 'building' && p) for (const q of e.queue) pay(p.res, unitStats(p.civ, q.type).cost, 1);
+    if (e.kind === 'building' && p) for (const q of e.queue) pay(p.res, this.queueCost(p, q), 1);
     e.queue = [];
     this.removeEntity(e);
   }
@@ -1022,7 +1046,8 @@ export class World {
         return;
       }
     }
-    if (o.phase === 'return' || u.carry >= CARRY_CAPACITY) {
+    const cap = carryCapacity(this.players[u.owner].techs);
+    if (o.phase === 'return' || u.carry >= cap) {
       if (o.phase !== 'return') {
         o.phase = 'return';
         u.path = null;
@@ -1054,8 +1079,8 @@ export class World {
         u.carryType = o.resType!;
         u.carry = 0;
       }
-      const civ = this.players[u.owner].civ;
-      const amt = Math.min(t.amount, gatherRate(civ, o.resType!, t.kind === 'building' ? 'farm' : 'node') / TICK_RATE);
+      const gp = this.players[u.owner];
+      const amt = Math.min(t.amount, gatherRate(gp.civ, o.resType!, t.kind === 'building' ? 'farm' : 'node', gp.techs) / TICK_RATE);
       u.carry += amt;
       t.amount -= amt;
       if (t.kind === 'resource') this.changedRes.add(t.id);
@@ -1063,8 +1088,8 @@ export class World {
         if (t.kind === 'resource') this.removeEntity(t);
         else this.kill(t, -1);
       }
-      if (u.carry >= CARRY_CAPACITY - 1e-6) {
-        u.carry = CARRY_CAPACITY;
+      if (u.carry >= cap - 1e-6) {
+        u.carry = cap;
         o.phase = 'return';
         u.path = null;
         u.repath = 0;
@@ -1139,7 +1164,15 @@ export class World {
       return;
     }
     // training
-    if (b.queue.length) {
+    if (b.queue.length && b.queue[0].tech) {
+      const q = b.queue[0];
+      const def = TECHS[q.type as unknown as TechId];
+      q.progress += 1 / (def.time * TICK_RATE);
+      if (q.progress >= 1) {
+        b.queue.shift();
+        this.applyTech(b.owner, def.id, b);
+      }
+    } else if (b.queue.length) {
       const q = b.queue[0];
       const us = unitStats(p.civ, q.type, TICK_RATE);
       if (!q.started) {
@@ -1187,7 +1220,7 @@ export class World {
             }
           }
         if (best) {
-          this.fireProjectile(b.id, b.owner, b.x, b.y, best, atk.damage, undefined, 'arrow');
+          this.fireProjectile(b.id, b.owner, b.x, b.y, best, b.bs!.attackDamage, undefined, 'arrow');
           b.cooldown = Math.round(atk.cooldown * TICK_RATE);
         }
       }
@@ -1227,6 +1260,41 @@ export class World {
         u.guard = { x: rx, y: ry };
       }
     }
+  }
+
+  /** techs being researched anywhere by this player */
+  queuedTechs(slot: number): string[] {
+    const out: string[] = [];
+    for (const e of this.entities.values()) {
+      if (e.kind !== 'building' || e.owner !== slot) continue;
+      for (const q of e.queue) if (q.tech) out.push(q.type);
+    }
+    return out;
+  }
+
+  private queueCost(p: SimPlayer, q: Entity['queue'][number]) {
+    return q.tech ? TECHS[q.type as unknown as TechId].cost : unitStats(p.civ, q.type, TICK_RATE).cost;
+  }
+
+  /** a tech finished: record it and refresh every unit's and building's stats */
+  applyTech(slot: number, id: TechId, at?: Entity) {
+    const p = this.players[slot];
+    if (!p || p.techs.includes(id)) return;
+    p.techs.push(id);
+    p.age = techMods(p.techs).age;
+    for (const e of this.entities.values()) {
+      if (e.owner !== slot) continue;
+      if (e.kind === 'unit') {
+        const us = unitStats(p.civ, e.type as UnitType, TICK_RATE, p.techs);
+        e.hp += us.maxHp - e.maxHp;
+        e.maxHp = us.maxHp;
+        e.us = us;
+      } else if (e.kind === 'building') {
+        e.bs = buildingStats(p.civ, e.type as BuildingType, p.techs);
+      }
+    }
+    const age = !!TECHS[id].effect.age;
+    this.emit({ e: 'researched', t: id, o: slot }, at?.x ?? 0, at?.y ?? 0, age ? { all: true } : { only: slot });
   }
 
   private rebuildHash() {
@@ -1302,7 +1370,7 @@ export class World {
       if (e.kind === 'unit') p.pop += e.us!.def.pop;
       else if (e.kind === 'building') {
         if (e.built) p.popCap += e.bs!.def.pop;
-        for (const q of e.queue) if (q.started) p.pop += UNITS[q.type].pop;
+        for (const q of e.queue) if (q.started && !q.tech) p.pop += UNITS[q.type].pop;
       }
     }
     for (const p of this.players) p.popCap = Math.min(POP_HARD_CAP, p.popCap);

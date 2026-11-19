@@ -112,6 +112,8 @@ export class App {
         <p><b>Economy:</b> select villagers and right-click trees (wood), bushes or farms (food), gold and stone mines. They carry resources back to your Durbar or a Storehouse — build storehouses near distant resources. Houses raise your population limit.</p>
         <p><b>Commanding units:</b> click a unit to select it (or drag a box around several), then ${orderVerb()} where it should go. You can change how orders are given (two-finger tap / right-click, double-click or single click) in the in-game menu.</p>
         <p><b>Army:</b> Barracks train infantry, the Archery Range archers, the Stable cavalry and war elephants. Spearmen counter cavalry and elephants, archers shred infantry, cavalry runs down archers. Each civilization has a unique unit.</p>
+        <p><b>Ages:</b> you begin in the <i>Janapada Age</i> with villagers, swordsmen and spearmen. Advance at your Durbar (400 food) to the <i>Rajya Age</i> for archers, cavalry, towers and the Blacksmith, then (700 food, 250 gold) to the <i>Samrajya Age</i> for war elephants, your unique unit and the strongest upgrades. Storehouses and the Durbar research faster gathering; the Blacksmith forges better weapons and armour. Locked buttons show what they need.</p>
+        <p><b>Battle orders:</b> A then click the ground to attack-move. S / D / F set stance: aggressive, defensive (returns to post), hold ground (never moves). Groups march in formation at the pace of their slowest unit.</p>
         ${controlsTable()}
       </div>
       <button class="btn" data-back>Back</button></div></div>`);

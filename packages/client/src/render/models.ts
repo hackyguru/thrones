@@ -748,6 +748,40 @@ export function buildBuilding(type: BuildingType, civ: CivId, pc: number): THREE
       flag(g, pc, 1.25, top, -1.25, 1.5, 1.2);
       break;
     }
+    case 'blacksmith': {
+      const top = plinth(g, S, 2.85, 2.85, 0.1, 2);
+      // workshop hall at the back
+      const hg = pivot(g, 0, 0, -0.7);
+      const roof = hall(hg, S, 2.5, 1.1, 0.85, top, [3, 0, 1, 1]);
+      smallRoof(hg, S, 2.5, 1.1, roof);
+      // open-sided forge shed in front: four posts and a tiled lean-to
+      for (const [x, z] of [[-1.2, 0.15], [1.2, 0.15], [-1.2, 1.25], [1.2, 1.25]]) add(g, G.cyl(0.045, 0.05, 0.85, 8), darkWood(), x, top + 0.42, z);
+      const lean = add(g, G.box(2.6, 0.06, 1.35), mat(0x8a4a2a, { tex: 'tiles', scale: 1.5 }), 0, top + 0.9, 0.7);
+      lean.rotation.x = 0.16;
+      // the hearth: brick box with glowing coals and a chimney
+      const brick = mat(0x8a5a40, { tex: 'plaster', scale: 2 });
+      add(g, G.box(0.7, 0.42, 0.55), brick, -0.65, top + 0.21, 0.55);
+      add(g, G.box(0.5, 0.05, 0.36), mat(0xff6a1a, { emissive: 0xff4a08, emissiveIntensity: 2.2, rough: 0.9 }), -0.65, top + 0.43, 0.55, false);
+      add(g, G.cyl(0.13, 0.17, 1.35, 10), brick, -0.85, top + 1.0, 0.35);
+      add(g, G.cyl(0.16, 0.16, 0.06, 10), S.trim, -0.85, top + 1.68, 0.35);
+      // bellows
+      const bel = add(g, G.box(0.32, 0.1, 0.22), mat(0x5a3a22, { tex: 'fabric', scale: 3 }), -0.15, top + 0.3, 0.42);
+      bel.rotation.z = 0.25;
+      // anvil on a stump, quench trough, weapon rack
+      add(g, G.cyl(0.13, 0.15, 0.28, 10), wood(), 0.35, top + 0.14, 0.85);
+      add(g, G.box(0.32, 0.1, 0.14), mat(0x3a3c40, { rough: 0.45, metal: 0.8 }), 0.35, top + 0.33, 0.85);
+      add(g, G.cone(0.07, 0.14, 8), mat(0x3a3c40, { rough: 0.45, metal: 0.8 }), 0.55, top + 0.33, 0.85).rotation.z = -Math.PI / 2;
+      add(g, G.box(0.55, 0.18, 0.22), darkWood(), 0.75, top + 0.09, 0.3);
+      add(g, G.box(0.48, 0.02, 0.16), mat(0x2a4a52, { rough: 0.1 }), 0.75, top + 0.18, 0.3, false);
+      add(g, G.box(0.9, 0.05, 0.05), darkWood(), 0.6, top + 0.62, 1.32);
+      for (let i = 0; i < 5; i++) {
+        const bl = add(g, G.box(0.03, 0.62, 0.012), steel(), 0.25 + i * 0.17, top + 0.33, 1.34);
+        bl.rotation.z = (i % 2 ? 1 : -1) * 0.08;
+      }
+      prop(g, 'crate', 1.15, top, -0.05, 0.24, 0.5);
+      flag(g, pc, 1.3, top, 1.3, 1.4, 1.2);
+      break;
+    }
     case 'tower': {
       const top = plinth(g, S, 1.8, 1.8, 0.12, 2);
       const round = S.key !== 'dravidian' && S.key !== 'vijayanagara';
