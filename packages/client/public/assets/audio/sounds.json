@@ -1,0 +1,84 @@
+{
+ "melee": [
+  "melee_0.mp3",
+  "melee_1.mp3",
+  "melee_2.mp3",
+  "melee_3.mp3",
+  "melee_4.mp3",
+  "melee_5.mp3",
+  "melee_6.mp3",
+  "melee_7.mp3",
+  "melee_8.mp3",
+  "melee_9.mp3",
+  "melee_10.mp3",
+  "melee_11.mp3"
+ ],
+ "swing": [
+  "swing_0.mp3",
+  "swing_1.mp3",
+  "swing_2.mp3"
+ ],
+ "unsheathe": [
+  "unsheathe_0.mp3",
+  "unsheathe_1.mp3",
+  "unsheathe_2.mp3",
+  "unsheathe_3.mp3"
+ ],
+ "chop": [
+  "chop_0.mp3",
+  "chop_1.mp3",
+  "chop_2.mp3",
+  "chop_3.mp3",
+  "chop_4.mp3",
+  "chop_5.mp3",
+  "chop_6.mp3",
+  "chop_7.mp3"
+ ],
+ "mine": [
+  "mine_0.mp3",
+  "mine_1.mp3",
+  "mine_2.mp3",
+  "mine_3.mp3",
+  "mine_4.mp3",
+  "mine_5.mp3",
+  "mine_6.mp3",
+  "mine_7.mp3"
+ ],
+ "build": [
+  "build_0.mp3",
+  "build_1.mp3",
+  "build_2.mp3",
+  "build_3.mp3",
+  "build_4.mp3",
+  "build_5.mp3",
+  "build_6.mp3",
+  "build_7.mp3"
+ ],
+ "ui": [
+  "ui_0.mp3",
+  "ui_1.mp3",
+  "ui_2.mp3",
+  "ui_3.mp3",
+  "ui_4.mp3",
+  "ui_5.mp3"
+ ],
+ "coins": [
+  "coins_0.mp3",
+  "coins_1.mp3",
+  "coins_2.mp3",
+  "coins_3.mp3"
+ ],
+ "cloth": [
+  "cloth_0.mp3",
+  "cloth_1.mp3"
+ ],
+ "collapse": [
+  "collapse_0.mp3",
+  "collapse_1.mp3"
+ ],
+ "drop": [
+  "drop_0.mp3",
+  "drop_1.mp3",
+  "drop_2.mp3"
+ ]
+}

@@ -17,9 +17,11 @@ export class GameRunner {
   private acc = 0;
   private ticks = 0;
   paused = false;
+  /** game speed multiplier (single-player) */
+  speed = 1;
 
-  constructor(setup: SessionSetup, private hooks: RunnerHooks) {
-    this.session = new GameSession(setup);
+  constructor(setup: SessionSetup, private hooks: RunnerHooks, session?: GameSession) {
+    this.session = session ?? new GameSession(setup);
   }
 
   start() {
@@ -38,14 +40,14 @@ export class GameRunner {
 
   private pump() {
     const now = Date.now();
-    this.acc += Math.min(500, now - this.last);
+    this.acc += Math.min(500, now - this.last) * this.speed;
     this.last = now;
     if (this.paused) {
       this.acc = 0;
       return;
     }
     let n = 0;
-    while (this.acc >= TICK_MS && n < 5) {
+    while (this.acc >= TICK_MS && n < 5 * Math.ceil(this.speed)) {
       this.acc -= TICK_MS;
       n++;
       this.session.step();

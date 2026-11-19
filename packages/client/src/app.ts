@@ -3,6 +3,7 @@ import { Game } from './game/game';
 import { Input } from './game/input';
 import { Hud, escapeHtml } from './ui/hud';
 import { LocalLink, Net, NetLink, type GameLink } from './net/connection';
+import { readSave, saveMeta } from './net/saves';
 import { civPicker, colorSwatches, el, hex, roomList, roomSlots, sounds } from './ui/screens';
 import { ICONS } from './ui/icons';
 import { controlsTable, orderVerb, settings } from './ui/settings';
@@ -97,7 +98,8 @@ export class App {
       </div>
       <div class="title-menu panel ornate">
         <label class="name-field">Your name<input maxlength="20" value="${escapeHtml(this.name)}" /></label>
-        <button class="btn primary" data-go="skirmish">Skirmish vs AI</button>
+        ${saveMeta() ? `<button class="btn primary" data-go="continue">Continue <span class="btn-sub">${escapeHtml(saveMeta()!.civ)} · ${saveMeta()!.minutes} min</span></button>` : ''}
+        <button class="btn ${saveMeta() ? '' : 'primary'}" data-go="skirmish">Skirmish vs AI</button>
         <button class="btn" data-go="online">Multiplayer Online</button>
         <button class="btn" data-go="codex">Civilizations</button>
         <button class="btn ghost" data-go="help">How to Play</button>
@@ -112,6 +114,7 @@ export class App {
     s.addEventListener('click', (e) => {
       const go = (e.target as HTMLElement).closest('[data-go]')?.getAttribute('data-go');
       if (go === 'skirmish') this.showSkirmish();
+      if (go === 'continue') void this.continueSave();
       if (go === 'online') void this.showOnline();
       if (go === 'codex') this.showCodex();
       if (go === 'help') this.showHelp();
@@ -364,6 +367,20 @@ export class App {
     this.startGame(link, () => {});
   }
 
+  private async continueSave() {
+    const json = await readSave();
+    if (!json) return;
+    let link: LocalLink;
+    try {
+      link = LocalLink.fromSave(json);
+    } catch (err) {
+      console.error(err);
+      alert('This saved game could not be loaded.');
+      return;
+    }
+    this.startGame(link, () => link.start());
+  }
+
   // ---------------------------------------------------------------------------
   private startGame(link: GameLink, begin: () => void) {
     sfx.stopDrone();
@@ -375,20 +392,23 @@ export class App {
     setTimeout(() => {
       this.stopBackdrop();
       const game = new Game(this.stage, link);
+      if (import.meta.env.DEV) (window as unknown as { __game: Game }).__game = game;
       const input = new Input(game, this.ui);
       const hud = new Hud(game, input, this.ui);
       this.game = game;
       this.input = input;
       this.hud = hud;
+      sfx.listener = (x, y) => game.soundAt(x, y);
       game.listeners.onFrame = (dt) => {
         input.frame();
         hud.update(dt);
+        sfx.update(dt);
       };
       game.listeners.onEvent = (ev) => {
         hud.onEvent(ev);
         const nearCam = 'x' in ev && Math.hypot((ev as { x: number }).x - game.camera.target.x, (ev as { y: number }).y - game.camera.target.y) < 22;
-        if (ev.e === 'hit' && nearCam) sfx.sword();
-        if (ev.e === 'proj' && Math.hypot(ev.sx - game.camera.target.x, ev.sy - game.camera.target.y) < 22) sfx.arrow();
+        if (ev.e === 'hit') sfx.sword(ev.x, ev.y);
+        if (ev.e === 'proj') sfx.arrow(ev.sx, ev.sy);
         if (ev.e === 'die' && nearCam) {
           if (ev.k === 1) sfx.collapse();
           else sfx.death();
@@ -407,6 +427,7 @@ export class App {
   }
 
   private endGame() {
+    sfx.listener = null;
     this.input?.dispose();
     this.hud?.dispose();
     this.game?.dispose();

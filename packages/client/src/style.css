@@ -313,3 +313,7 @@ body.cursor-move .game-canvas { cursor: url("data:image/svg+xml,%3Csvg xmlns='ht
 .boot-bar { width: 320px; height: 6px; border: 1px solid var(--gold-lo); border-radius: 3px; overflow: hidden; background: #120a06; }
 .boot-bar i { display: block; height: 100%; width: 0; background: linear-gradient(90deg, var(--gold-lo), var(--gold-hi)); transition: width 0.2s; }
 .boot-note { font-family: var(--f-head); color: var(--ink-dim); letter-spacing: 2px; font-size: 13px; }
+
+/* save / speed */
+.btn-sub { display: block; font-size: 0.68em; opacity: 0.75; letter-spacing: 0.04em; text-transform: none; font-family: 'Spectral', serif; margin-top: 2px; }
+.icon-btn.speed-btn { width: auto; min-width: 42px; padding: 0 10px; font-family: 'Cinzel', serif; font-weight: 700; font-size: 14px; }

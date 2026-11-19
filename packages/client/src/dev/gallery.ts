@@ -33,7 +33,7 @@ export function startGallery(stage: HTMLElement, civ: CivId, view: string) {
     const r = buildUnit(u, civ, pc, i * 3 + 1);
     rigs.push(r);
     // show a variety of actions
-    if (r.human) play(r.human, ['Sword_Attack', 'Jog_Fwd_Loop', 'Sword_Idle', 'Spell_Simple_Shoot', 'Fixing_Kneeling'][i % 5]);
+    if (r.human) play(r.human, ['Sword_Attack', 'Walk_Loop', 'Sword_Idle', 'Spell_Simple_Shoot', 'Fixing_Kneeling'][i % 5]);
     r.root.position.set(24 + i * 1.6, 0, 34.5);
     r.root.rotation.y = -0.4;
     engine.scene.add(r.root);

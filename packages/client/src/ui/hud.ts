@@ -9,6 +9,7 @@ import type { CEnt } from '../game/entities';
 import { portrait } from '../render/portraits';
 import { ICONS, costHtml } from './icons';
 import { sfx } from '../audio/sfx';
+import { writeSave } from '../net/saves';
 import { controlsTable, isMac, orderVerb, settings, type Graphics, type OrderClick } from './settings';
 
 const GRID_KEYS = ['Q', 'W', 'E', 'R', 'A', 'S', 'D', 'F', 'Z', 'X', 'C', 'V'];
@@ -66,6 +67,7 @@ export class Hud {
         <div class="top-civ"><span class="emblem">${civ.emblem}</span>${civ.name}</div>
         <div class="top-clock">00:00</div>
         <button class="icon-btn help-btn" title="Controls">?</button>
+        <button class="icon-btn speed-btn" title="Game speed">1×</button>
         <button class="icon-btn mute-btn" title="Sound">${sfx.muted ? ICONS.mute : ICONS.sound}</button>
         <button class="icon-btn menu-btn" title="Menu (F10)">${ICONS.menu}</button>
       </div>
@@ -84,6 +86,7 @@ export class Hud {
         <div class="panel ornate">
           <h2>Durbar Paused</h2>
           <button class="btn" data-act="resume">Resume</button>
+          <button class="btn" data-act="save">Save Game</button>
           <button class="btn" data-act="resign">Resign</button>
           <button class="btn ghost" data-act="quit">Quit to Menu</button>
           <label class="toggle">Give orders with
@@ -132,6 +135,18 @@ export class Hud {
       }
       if (act === 'quit') this.onQuit();
       if (act === 'controls') this.showControls();
+      if (act === 'save') void this.saveGame();
+    });
+    const local = game.link as unknown as { speed?: number; save?: () => string };
+    if (game.link.online || !local.save) {
+      this.q('.speed-btn').style.display = 'none';
+      (this.q('[data-act="save"]') as HTMLElement).style.display = 'none';
+    }
+    on(this.q('.speed-btn'), 'click', () => {
+      const speeds = [1, 1.5, 2, 3];
+      const next = speeds[(speeds.indexOf(local.speed ?? 1) + 1) % speeds.length];
+      local.speed = next;
+      this.q('.speed-btn').textContent = `${next}×`;
     });
     on(this.q('.order-click'), 'change', (e) => {
       settings.orderClick = (e.target as HTMLSelectElement).value as OrderClick;
@@ -271,6 +286,19 @@ export class Hud {
   }
 
   private paused = false;
+  private async saveGame() {
+    const link = this.game.link as unknown as { save?: () => string };
+    if (!link.save) return;
+    try {
+      const json = link.save();
+      await writeSave(json, { date: Date.now(), civ: CIVS[this.game.civOf(this.game.you)].name, minutes: Math.round(this.game.tick / TICK_RATE / 60) });
+      this.message('Game saved', 'good');
+    } catch (err) {
+      console.error(err);
+      this.message('Could not save the game (browser storage full?)', 'warn');
+    }
+  }
+
   togglePause(force?: boolean) {
     this.paused = force ?? !this.paused;
     this.q('.pause').classList.toggle('hidden', !this.paused);

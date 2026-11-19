@@ -1,5 +1,5 @@
 import {
-  GameRunner, type ClientMsg, type Command, type GameInit, type GameOverInfo, type PlayerInfo, type ServerMsg, type Snapshot,
+  GameRunner, GameSession, type ClientMsg, type Command, type GameInit, type GameOverInfo, type PlayerInfo, type ServerMsg, type Snapshot,
 } from '@thrones/shared';
 
 /** What a running game needs from its transport. */
@@ -24,15 +24,20 @@ export class LocalLink implements GameLink {
   onGameOver: (info: GameOverInfo) => void = () => {};
   onChat: (from: string, text: string) => void = () => {};
 
-  constructor(players: PlayerInfo[], public slot: number, opts: { seed?: number; difficulty?: 'easy' | 'normal'; fastForwardSec?: number } = {}) {
+  constructor(
+    players: PlayerInfo[],
+    public slot: number,
+    opts: { seed?: number; difficulty?: 'easy' | 'normal'; fastForwardSec?: number; session?: GameSession } = {},
+  ) {
     const seed = opts.seed ?? (Math.random() * 2 ** 31) | 0;
     this.runner = new GameRunner(
-      { seed, players, aiDifficulty: opts.difficulty },
+      opts.session?.setup ?? { seed, players, aiDifficulty: opts.difficulty },
       {
         listeners: () => [this.slot],
         onSnapshot: (_slot, s) => this.onSnapshot(s),
         onGameOver: (info) => this.onGameOver(info),
       },
+      opts.session,
     );
     if (opts.fastForwardSec) {
       const n = opts.fastForwardSec * 20;
@@ -54,6 +59,24 @@ export class LocalLink implements GameLink {
   chat() {}
   setPaused(p: boolean) {
     this.runner.paused = p;
+  }
+  get speed() {
+    return this.runner.speed;
+  }
+  set speed(v: number) {
+    this.runner.speed = v;
+  }
+  /** the whole match, for a save game */
+  save(): string {
+    return this.runner.session.serialize();
+  }
+  static fromSave(json: string): LocalLink {
+    const session = GameSession.deserialize(json);
+    const you = session.setup.players.find((p) => !p.isAI)?.slot ?? 0;
+    const link = new LocalLink(session.setup.players, you, { session });
+    // first snapshot carries everything currently visible
+    link.runner.session.snapshots([you]);
+    return link;
   }
   close() {
     this.runner.stop();

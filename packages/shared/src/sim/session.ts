@@ -1,6 +1,8 @@
 import { MAP_SIZE, TICK_RATE } from '../constants';
+import { mulberry32 } from '../rng';
 import type { Command, EntSnap, GameEvent, GameInit, GameOverInfo, PlayerInfo, Snapshot } from '../types';
 import { AIController } from './ai';
+import { buildingStats, unitStats } from '../data/stats';
 import { generateMap } from './mapgen';
 import { r2, World, type Entity } from './world';
 
@@ -15,6 +17,8 @@ export interface SessionSetup {
 export class GameSession {
   world: World;
   private ais: AIController[] = [];
+  /** restored from a save: the client must see current resource nodes, not the initial ones */
+  private loaded = false;
   private terrainStr: string;
   private initResources: GameInit['resources'];
 
@@ -39,7 +43,9 @@ export class GameSession {
       seed: this.setup.seed,
       mapSize: this.world.size,
       terrain: this.terrainStr,
-      resources: this.initResources,
+      resources: this.loaded
+        ? [...this.world.entities.values()].filter((e) => e.kind === 'resource' && !e.dead).map((e) => ({ i: e.id, t: e.type as never, x: e.tx, y: e.ty, a: e.amount }))
+        : this.initResources,
       players: this.setup.players,
       you: slot,
       starts: this.world.starts,
@@ -113,6 +119,64 @@ export class GameSession {
     w.events.length = 0;
     return out;
   }
+
+  // ---------------------------------------------------------------------------
+  // save / load (single-player)
+  // ---------------------------------------------------------------------------
+  /** the whole match as a JSON string (derived data such as unit stats is rebuilt on load) */
+  serialize(): string {
+    const w = this.world;
+    const ents = [...w.entities.values()].map((e) => ({ ...e, us: null, bs: null }));
+    const save: SaveData = {
+      v: SAVE_VERSION,
+      setup: this.setup,
+      tick: w.tick,
+      nextId: w.nextId,
+      winner: w.winner,
+      occ: b64(w.occ),
+      block: b64(w.block),
+      entities: ents,
+      projectiles: w.projectiles,
+      players: w.players.map((p) => ({ ...p, visible: b64(p.visible) })),
+      ais: this.ais.map((a) => {
+        const x = a as unknown as AIState;
+        return { slot: a.slot, wave: x.wave, nextAttack: x.nextAttack, attacking: [...x.attacking] };
+      }),
+    };
+    return JSON.stringify(save);
+  }
+
+  static deserialize(json: string): GameSession {
+    const d = JSON.parse(json) as SaveData;
+    if (d.v !== SAVE_VERSION) throw new Error('This save is from an older version of Thrones');
+    const s = new GameSession(d.setup);
+    const w = s.world;
+    w.tick = d.tick;
+    w.nextId = d.nextId;
+    w.winner = d.winner;
+    w.occ = new Int32Array(unb64(d.occ).buffer);
+    w.block = unb64(d.block);
+    w.entities.clear();
+    for (const e of d.entities) {
+      const civ = d.players.find((p) => p.slot === e.owner)?.civ;
+      if (civ && e.kind === 'unit') e.us = unitStats(civ, e.type as never, TICK_RATE);
+      if (civ && e.kind === 'building') e.bs = buildingStats(civ, e.type as never);
+      w.entities.set(e.id, e);
+    }
+    w.projectiles = d.projectiles;
+    w.events = [];
+    w.players = d.players.map((p) => ({ ...p, visible: unb64(p.visible) }));
+    for (const a of d.ais) {
+      const ai = s.ais.find((x) => x.slot === a.slot) as unknown as AIState | undefined;
+      if (!ai) continue;
+      ai.wave = a.wave;
+      ai.nextAttack = a.nextAttack;
+      ai.attacking = new Set(a.attacking);
+      ai.rng = mulberry32(d.setup.seed ^ (a.slot * 7919) ^ d.tick);
+    }
+    s.loaded = true;
+    return s;
+  }
 }
 
 function visibleAt(w: World, slot: number, x: number, y: number) {
@@ -141,4 +205,42 @@ function serialize(e: Entity, own: boolean): EntSnap {
     }
   }
   return s;
+
+}
+
+const SAVE_VERSION = 1;
+
+interface AIState {
+  wave: number;
+  nextAttack: number;
+  attacking: Set<number>;
+  rng: () => number;
+}
+
+interface SaveData {
+  v: number;
+  setup: SessionSetup;
+  tick: number;
+  nextId: number;
+  winner: number;
+  occ: string;
+  block: string;
+  entities: Entity[];
+  projectiles: World['projectiles'];
+  players: (Omit<World['players'][number], 'visible'> & { visible: string })[];
+  ais: { slot: number; wave: number; nextAttack: number; attacking: number[] }[];
+}
+
+/** typed array <-> base64 (works in browsers and Node) */
+function b64(a: ArrayBufferView): string {
+  const bytes = new Uint8Array(a.buffer, a.byteOffset, a.byteLength);
+  let s = '';
+  for (let i = 0; i < bytes.length; i += 0x8000) s += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+  return btoa(s);
+}
+function unb64(s: string): Uint8Array {
+  const bin = atob(s);
+  const out = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+  return out;
 }

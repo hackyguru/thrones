@@ -1,7 +1,8 @@
 import * as THREE from 'three';
 import { Anim, BUILDINGS, UNITS, type BuildingType, type CivId, type EntSnap, type ResourceType, type UnitType } from '@thrones/shared';
 import { buildBuilding, buildScaffold, buildUnit, type Rig } from '../render/models';
-import { clipDuration, holdLegs, play } from '../render/characters';
+import { clipDuration, holdLegs, play, type HumanRig } from '../render/characters';
+import { sfx } from '../audio/sfx';
 import { mountClipDuration, playMount } from '../render/mounts';
 import type { TerrainView } from '../render/terrain';
 
@@ -199,9 +200,8 @@ export class UnitView {
     const melee = !def.ranged;
     switch (e.a) {
       case Anim.WALK:
-        // laden villagers walk; everyone else jogs
-        if (e.c > 0 && e.type === 'villager') play(h, 'Walk_Loop', { timeScale: Math.min(1.3, Math.max(0.7, this.speed / 1.3)) });
-        else play(h, 'Jog_Fwd_Loop', { timeScale: Math.min(1.35, Math.max(0.6, this.speed / 2.0)) });
+        // everyone on foot walks; the stride rate follows the unit's ground speed
+        play(h, 'Walk_Loop', { timeScale: Math.min(1.35, Math.max(0.75, this.speed / 1.3)) });
         break;
       case Anim.ATTACK:
         if (e.type === 'villager') play(h, 'Punch_Jab', { timeScale: clipDuration('Punch_Jab') / this.cooldown });
@@ -220,6 +220,27 @@ export class UnitView {
         play(h, def.cls !== 'villager' && melee ? 'Sword_Idle' : 'Idle_Loop');
     }
     h.mixer.update(dt);
+    this.workSounds(h);
+  }
+
+  private workPhase = 0;
+  /** axe / pick / hammer strokes, timed to the moment of impact in the animation */
+  private workSounds(h: HumanRig) {
+    const e = this.ent;
+    const a = h.current;
+    if (!a || (e.a !== Anim.GATHER && e.a !== Anim.BUILD) || (e.g === 'food' && e.a === Anim.GATHER)) {
+      this.workPhase = 0;
+      return;
+    }
+    const name = a.getClip().name;
+    const p = (a.time % a.getClip().duration) / a.getClip().duration;
+    const hits = name === 'Chop_Loop' || name === 'Mine_Loop' ? [0.63] : name === 'Fixing_Kneeling' ? [0.2, 0.55, 0.85] : [];
+    for (const k of hits) {
+      // the clip may have looped back to its start since the last frame
+      const crossed = p >= this.workPhase ? this.workPhase < k && k <= p : k > this.workPhase || k <= p;
+      if (crossed) sfx.work(e.a === Anim.BUILD ? 'build' : e.g === 'wood' ? 'chop' : 'mine', e.x, e.y);
+    }
+    this.workPhase = p;
   }
 
   /** sculpted horse / elephant: gait follows ground speed */

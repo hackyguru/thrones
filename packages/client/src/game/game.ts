@@ -37,6 +37,8 @@ export class Game {
   tick = 0;
   time = 0;
   private snapAt = 0;
+  /** smoothed real time between snapshots (ms) */
+  private snapInterval = SNAP_MS;
   private visTimer = 0;
   private raf = 0;
   private last = performance.now();
@@ -112,8 +114,22 @@ export class Game {
     this.worldGroup.remove(e.view.root);
   }
 
+  private soundV = new THREE.Vector3();
+  /** how loud / where in stereo a sound at a world position is for the current camera view */
+  soundAt(x: number, y: number) {
+    const v = this.soundV.set(x, this.terrain.groundAt(x, y), y).project(this.engine.camera);
+    const off = Math.max(Math.abs(v.x), Math.abs(v.y));
+    const onScreen = off < 1 ? 1 : Math.max(0, 1 - (off - 1) / 0.8);
+    const d = Math.hypot(x - this.camera.target.x, y - this.camera.target.y);
+    return { gain: onScreen * Math.max(0.3, 1 - d / 45), pan: Math.max(-0.8, Math.min(0.8, v.x * 0.75)) };
+  }
+
   onSnapshot(s: Snapshot) {
     const now = performance.now();
+    if (this.snapAt > 0) {
+      const gap = now - this.snapAt;
+      if (gap > 5 && gap < 1000) this.snapInterval += (gap - this.snapInterval) * 0.2;
+    }
     this.snapAt = now;
     this.tick = s.t;
     if (s.me) this.me = s.me;
@@ -201,7 +217,8 @@ export class Game {
     this.last = t;
     this.time += dt;
     const now = performance.now();
-    const k = Math.min(1.25, (now - this.snapAt) / SNAP_MS);
+    // interpolate over the measured snapshot spacing (it shrinks at higher game speeds)
+    const k = Math.min(1.25, (now - this.snapAt) / this.snapInterval);
     for (const e of this.ents.values()) {
       if (e.kind === 0) {
         e.x = e.px + (e.nx - e.px) * k;
