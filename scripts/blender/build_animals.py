@@ -376,6 +376,57 @@ def build_elephant():
         return o
 
     box('h_floor', Vector((0, cy.y, hz + 0.05)), (1.0, 1.1, 0.1), wood)
+    # gaddi: the thick padded cushion a howdah sits on; its underside follows the curve of the back
+    pad_m = A.flat_material('gaddi', (0.2, 0.035, 0.03), 0.9)
+    pipe_m = A.flat_material('gaddi_pipe', (0.62, 0.45, 0.16), 0.5, 0.6)
+    bm = bmesh.new()
+    NX, NY, PX, PY = 8, 8, 0.54, 0.58
+    top, bot = [], []
+    for j in range(NY + 1):
+        rt, rb = [], []
+        for i in range(NX + 1):
+            u, w = -1 + 2 * i / NX, -1 + 2 * j / NY
+            x, y = u * PX, cy.y + w * PY
+            # the cushion squashes out at the bottom, so its underside is wider than its top
+            xb, yb = x * 1.12, cy.y + w * PY * 1.06
+            hit, loc, _, _ = body.ray_cast(Vector((xb, yb, hz + 1.0)), Vector((0, 0, -1)))
+            zb = (loc.z + 0.03) if hit else hz - 0.3
+            zt = hz + 0.02
+            rt.append(bm.verts.new((x, y, max(zt, zb + 0.03))))
+            rb.append(bm.verts.new((xb, yb, min(zb, zt - 0.03))))
+        top.append(rt)
+        bot.append(rb)
+    for j in range(NY):
+        for i in range(NX):
+            bm.faces.new((top[j][i], top[j][i + 1], top[j + 1][i + 1], top[j + 1][i]))
+            bm.faces.new((bot[j][i], bot[j + 1][i], bot[j + 1][i + 1], bot[j][i + 1]))
+    loop = lambda g: [g[0][i] for i in range(NX)] + [g[j][NX] for j in range(NY)] + [g[NY][i] for i in range(NX, 0, -1)] + [g[j][0] for j in range(NY, 0, -1)]
+    ring_t, ring_b = loop(top), loop(bot)
+    # side walls: a gold piping band just under the top edge, then a stuffed, outward-bowed cloth side
+    lv = lambda a, b, t, bow: bm.verts.new((a.co.x + (b.co.x - a.co.x) * t + a.co.x * bow, a.co.y + (b.co.y - a.co.y) * t + (a.co.y - cy.y) * bow, a.co.z + (b.co.z - a.co.z) * t))
+    n = len(ring_t)
+    bands = [ring_t, [lv(a, b, 0.0, 0.04) for a, b in zip(ring_t, ring_b)], [lv(a, b, 0.12, 0.05) for a, b in zip(ring_t, ring_b)],
+             [lv(a, b, 0.55, 0.07) for a, b in zip(ring_t, ring_b)], ring_b]
+    pipe = []
+    for r in range(len(bands) - 1):
+        A_, B_ = bands[r], bands[r + 1]
+        for k in range(n):
+            f = bm.faces.new((A_[k], B_[k], B_[(k + 1) % n], A_[(k + 1) % n]))
+            if r < 2:
+                pipe.append(f)
+    for f in pipe:
+        f.material_index = 1
+    bmesh.ops.recalc_face_normals(bm, faces=bm.faces)
+    me = bpy.data.meshes.new('gaddi')
+    bm.to_mesh(me)
+    bm.free()
+    for p in me.polygons:
+        p.use_smooth = True
+    pad = bpy.data.objects.new('gaddi', me)
+    link(pad)
+    me.materials.append(pad_m)
+    me.materials.append(pipe_m)
+    parts.append(pad)
     for sx in (1, -1):
         box('h_side', Vector((sx * 0.48, cy.y, hz + 0.28)), (0.05, 1.1, 0.36), wood)
         box('h_rail', Vector((sx * 0.48, cy.y, hz + 0.48)), (0.08, 1.14, 0.05), gold)
