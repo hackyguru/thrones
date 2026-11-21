@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import {
-  AGES, BUILD_PAGES, BUILDINGS, CIVS, PLAYER_COLORS, RESOURCE_NODES, TECHS, TICK_RATE, Terrain, UNITS, buildingStats, canAfford, techBlocker, techsAt, trainable, unitStats, type Age, type TechId,
+  AGES, BUILD_PAGES, BUILDINGS, CIVS, PLAYER_COLORS, RESOURCE_NODES, TECHS, TICK_RATE, Terrain, UNITS, buildingStats, canAfford, techBlocker, techsAt, trainable, unitAge, unitStats, type Age, type TechId,
   type BuildingType, type Cost, type GameEvent, type GameOverInfo, type UnitType,
 } from '@thrones/shared';
 import type { Game } from '../game/game';
@@ -512,11 +512,12 @@ export class Hud {
     trains.forEach((t, i) => {
       const us = unitStats(civ, t, TICK_RATE, techs);
       const def = UNITS[t];
-      const locked = def.age > myAge;
+      const age = unitAge(civ, t);
+      const locked = age > myAge;
       out.push({
         key: GRID_KEYS[i], icon: `<img src="${portrait('unit', t, civ, pc)}"/>`,
         title: `Train ${def.name}${def.uniqueTo ? ' ★' : ''}`,
-        desc: `<i>${def.native}</i> — ${def.description}<div class="tip-stats">${ICONS.sword}${us.attack} ${ICONS.shield}${us.armorMelee}/${us.armorPierce} ♥${us.maxHp}${def.ranged ? ` ${ICONS.bow}${us.range}` : ''}</div>${locked ? `<div class="tip-req">Requires the ${AGES[def.age].name}</div>` : ''}`,
+        desc: `<i>${def.native}</i> — ${def.description}<div class="tip-stats">${ICONS.sword}${us.attack} ${ICONS.shield}${us.armorMelee}/${us.armorPierce} ♥${us.maxHp}${def.ranged ? ` ${ICONS.bow}${us.range}` : ''}</div>${locked ? `<div class="tip-req">Requires the ${AGES[age].name}</div>` : ''}`,
         cost: us.cost,
         locked,
         disabled: locked || !canAfford(g.me.r, us.cost),

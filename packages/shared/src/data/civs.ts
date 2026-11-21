@@ -17,6 +17,10 @@ export interface CivMods {
   buildingHp?: number;
   buildingWoodCost?: number;
   towerRange?: number;
+  /** farms worked faster (multiplier) */
+  farm?: number;
+  /** units available one age earlier than usual */
+  earlyUnits?: UnitType[];
 }
 
 export interface CivDef {
@@ -43,9 +47,9 @@ export const CIVS: Record<CivId, CivDef> = {
     description:
       'Forged by Chandragupta and guided by the Arthashastra of Chanakya, the Mauryas built the first empire to span the subcontinent, fielding thousands of war elephants.',
     arch: 'mauryan', colors: { primary: '#c7924a', secondary: '#5b3a1e' }, emblem: '☸',
-    bonuses: ['Gold gathered 20% faster (Arthashastra)', 'War elephants cost 25% less', 'War elephants +15% hit points'],
+    bonuses: ['Gold gathered 20% and wood 15% faster (the Arthashastra\'s state mines and forests)', 'War elephants from the Rajya Age', 'War elephants cost 25% less and have 15% more hit points'],
     unique: 'gajasena',
-    mods: { gather: { gold: 1.2 }, unitCost: { elephant: 0.75 }, unitHp: { elephant: 1.15 } },
+    mods: { gather: { gold: 1.2, wood: 1.15 }, unitCost: { elephant: 0.75 }, unitHp: { elephant: 1.15 }, earlyUnits: ['elephant'] },
   },
   chola: {
     id: 'chola', name: 'Chola Dynasty', short: 'Chola', era: '848 – 1279 CE', capital: 'Thanjavur',
@@ -53,9 +57,9 @@ export const CIVS: Record<CivId, CivDef> = {
     description:
       'From the Kaveri delta the Cholas raised towering temples and sent fleets across the Bay of Bengal. Their irrigated paddy fields fed a mighty, disciplined state.',
     arch: 'dravidian', colors: { primary: '#d9a13b', secondary: '#7a2318' }, emblem: '🐅',
-    bonuses: ['Food gathered 20% faster (Kaveri paddies)', 'Villagers build 25% faster', 'Infantry +1 melee armor'],
+    bonuses: ['Food gathered 5% faster (Kaveri paddies)', 'Villagers build 10% faster', 'Infantry +10% hit points'],
     unique: 'velaikkarar',
-    mods: { gather: { food: 1.2 }, buildSpeed: 1.25, armorMelee: { infantry: 1 } },
+    mods: { gather: { food: 1.05 }, buildSpeed: 1.1, unitHp: { infantry: 1.1 } },
   },
   mughal: {
     id: 'mughal', name: 'Mughal Empire', short: 'Mughal', era: '1526 – 1857 CE', capital: 'Agra',
@@ -63,9 +67,9 @@ export const CIVS: Record<CivId, CivDef> = {
     description:
       'The Mughals combined Central Asian cavalry with a sophisticated administration — the mansabdari system — and left behind marble wonders like the Taj Mahal.',
     arch: 'mughal', colors: { primary: '#e8e2d0', secondary: '#1f5a43' }, emblem: '🌙',
-    bonuses: ['Units train 20% faster', 'Buildings cost 15% less wood', 'Cavalry +10% hit points'],
+    bonuses: ['Units train 17% faster', 'Buildings cost 15% less wood', 'Cavalry +10% hit points'],
     unique: 'mansabdar',
-    mods: { trainSpeed: 1.2, buildingWoodCost: 0.85, unitHp: { cavalry: 1.1 } },
+    mods: { trainSpeed: 1.17, buildingWoodCost: 0.85, unitHp: { cavalry: 1.1 } },
   },
   rajput: {
     id: 'rajput', name: 'Rajput Kingdoms', short: 'Rajput', era: '700 – 1700 CE', capital: 'Chittor',
@@ -97,9 +101,9 @@ export const CIVS: Record<CivId, CivDef> = {
     description:
       'From the granite boulders of Hampi, the Vijayanagara emperors built one of the largest cities in the world, defended by great walls and expert archers.',
     arch: 'vijayanagara', colors: { primary: '#b9b2a4', secondary: '#7d2e46' }, emblem: '🐘',
-    bonuses: ['Stone gathered 25% faster', 'Buildings +20% hit points', 'Ranged units +15% hit points'],
+    bonuses: ['Farms worked 10% faster (the Tungabhadra canals)', 'Archers cost 15% less and have 15% more hit points', 'Buildings and walls +20% hit points'],
     unique: 'nayaka_archer',
-    mods: { gather: { stone: 1.25 }, buildingHp: 1.2, unitHp: { ranged: 1.15 } },
+    mods: { farm: 1.1, unitCost: { ranged: 0.85 }, buildingHp: 1.2, unitHp: { ranged: 1.15 } },
   },
 };
 

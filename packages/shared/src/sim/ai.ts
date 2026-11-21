@@ -1,6 +1,6 @@
 import { TICK_RATE } from '../constants';
 import { CIVS } from '../data/civs';
-import { buildingStats, canAfford, trainable, unitStats } from '../data/stats';
+import { buildingStats, canAfford, trainable, unitAge, unitStats } from '../data/stats';
 import { UNITS } from '../data/units';
 import { BUILDINGS } from '../data/buildings';
 import { TECHS, techBlocker, type TechId } from '../data/techs';
@@ -482,7 +482,7 @@ export class AIController {
   /** trainable units ranked by how well they answer the enemy army we've seen */
   private bestUnits(c: CivId, opts?: UnitType[]): UnitType[] {
     const age = this.w.players[this.slot]?.age ?? 1;
-    const options = (opts ?? PROD.flatMap((t) => trainable(c, t))).filter((u) => UNITS[u].age <= age);
+    const options = (opts ?? PROD.flatMap((t) => trainable(c, t))).filter((u) => unitAge(c, u) <= age);
     const counts = new Map<string, number>();
     let total = 0;
     for (const s of this.seen.values()) {

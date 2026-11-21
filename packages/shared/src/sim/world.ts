@@ -2,7 +2,7 @@ import {
   INTERACT_RANGE, MAX_QUEUE, POP_HARD_CAP, PROJECTILE_SPEED, START_RESOURCES, TICK_RATE, Terrain,
 } from '../constants';
 import { BUILDINGS, RESOURCE_NODES, isWall, wallLine } from '../data/buildings';
-import { buildingStats, canAfford, carryCapacity, gatherRate, pay, trainable, unitStats, type BuildingStats, type UnitStats } from '../data/stats';
+import { buildingStats, canAfford, carryCapacity, gatherRate, pay, trainable, unitAge, unitStats, type BuildingStats, type UnitStats } from '../data/stats';
 import { TECHS, techBlocker, techMods, techsAt, type TechId } from '../data/techs';
 import { UNITS } from '../data/units';
 import {
@@ -668,7 +668,7 @@ export class World {
         const b = this.entities.get(cmd.building);
         if (!b || b.kind !== 'building' || b.owner !== slot || !b.built) return;
         if (!trainable(p.civ, b.type as BuildingType).includes(cmd.type)) return;
-        if (UNITS[cmd.type].age > p.age) return;
+        if (unitAge(p.civ, cmd.type) > p.age) return;
         if (b.queue.length >= MAX_QUEUE) return;
         const us = unitStats(p.civ, cmd.type, TICK_RATE);
         if (!canAfford(p.res, us.cost)) return;

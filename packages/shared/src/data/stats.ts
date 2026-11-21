@@ -95,12 +95,18 @@ export function gatherRate(civ: CivId, resType: ResourceType, source: 'farm' | '
   else if (resType === 'wood') base = 0.75;
   else if (resType === 'gold') base = 0.65;
   else base = 0.6;
-  return base * (m.gather?.[resType] ?? 1) * (1 + t.gather[resType] + (source === 'farm' ? t.farmRate : 0));
+  return base * (m.gather?.[resType] ?? 1) * (source === 'farm' ? m.farm ?? 1 : 1) * (1 + t.gather[resType] + (source === 'farm' ? t.farmRate : 0));
 }
 
 /** what a villager can carry */
 export function carryCapacity(techs?: readonly string[]): number {
   return 10 + techMods(techs).carry;
+}
+
+/** the age a unit becomes available to this civ (some get a unit one age early) */
+export function unitAge(civ: CivId, type: UnitType): 1 | 2 | 3 {
+  const a = UNITS[type].age;
+  return CIVS[civ].mods.earlyUnits?.includes(type) && a > 1 ? ((a - 1) as 1 | 2) : a;
 }
 
 /** Units a building can train for this civ */
