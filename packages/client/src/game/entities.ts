@@ -25,6 +25,8 @@ export interface CEnt {
   c: number;
   ct?: ResourceType;
   g?: ResourceType;
+  /** working a farm */
+  fm?: boolean;
   p?: number;
   q?: [string, number][];
   r?: [number, number];
@@ -193,7 +195,8 @@ export class UnitView {
       r.tools.axe.visible = e.a === Anim.GATHER && e.g === 'wood';
       r.tools.pick!.visible = e.a === Anim.GATHER && (e.g === 'gold' || e.g === 'stone');
       r.tools.hammer!.visible = e.a === Anim.BUILD;
-      r.tools.basket!.visible = e.a === Anim.GATHER && e.g === 'food';
+      r.tools.basket!.visible = e.a === Anim.GATHER && e.g === 'food' && !e.fm;
+      if (r.tools.hoe) r.tools.hoe.visible = e.a === Anim.GATHER && !!e.fm;
       for (const k of ['wood', 'gold', 'stone', 'food'] as ResourceType[]) {
         const c = r.carry[k];
         if (c) c.visible = e.c > 0 && e.ct === k && e.a !== Anim.GATHER;
@@ -211,7 +214,8 @@ export class UnitView {
         else play(h, 'Spell_Simple_Shoot', { timeScale: clipDuration('Spell_Simple_Shoot') / this.cooldown });
         break;
       case Anim.GATHER:
-        if (e.g === 'food') play(h, 'PickUp_Table', { timeScale: 0.9 });
+        if (e.fm) play(h, 'Mine_Loop', { timeScale: 0.75 });
+        else if (e.g === 'food') play(h, 'PickUp_Table', { timeScale: 0.9 });
         else if (e.g === 'wood') play(h, 'Chop_Loop');
         else play(h, 'Mine_Loop');
         break;
@@ -230,7 +234,7 @@ export class UnitView {
   private workSounds(h: HumanRig) {
     const e = this.ent;
     const a = h.current;
-    if (!a || (e.a !== Anim.GATHER && e.a !== Anim.BUILD) || (e.g === 'food' && e.a === Anim.GATHER)) {
+    if (!a || (e.a !== Anim.GATHER && e.a !== Anim.BUILD) || (e.g === 'food' && e.a === Anim.GATHER && !e.fm)) {
       this.workPhase = 0;
       return;
     }
@@ -240,7 +244,7 @@ export class UnitView {
     for (const k of hits) {
       // the clip may have looped back to its start since the last frame
       const crossed = p >= this.workPhase ? this.workPhase < k && k <= p : k > this.workPhase || k <= p;
-      if (crossed) sfx.work(e.a === Anim.BUILD ? 'build' : e.g === 'wood' ? 'chop' : 'mine', e.x, e.y);
+      if (crossed) sfx.work(e.a === Anim.BUILD ? 'build' : e.fm ? 'hoe' : e.g === 'wood' ? 'chop' : 'mine', e.x, e.y);
     }
     this.workPhase = p;
   }
@@ -302,7 +306,8 @@ export class UnitView {
       r.tools.axe.visible = e.a === Anim.GATHER && e.g === 'wood';
       r.tools.pick!.visible = e.a === Anim.GATHER && (e.g === 'gold' || e.g === 'stone');
       r.tools.hammer!.visible = e.a === Anim.BUILD;
-      r.tools.basket!.visible = e.a === Anim.GATHER && e.g === 'food';
+      r.tools.basket!.visible = e.a === Anim.GATHER && e.g === 'food' && !e.fm;
+      if (r.tools.hoe) r.tools.hoe.visible = e.a === Anim.GATHER && !!e.fm;
       for (const k of ['wood', 'gold', 'stone', 'food'] as ResourceType[]) {
         const c = r.carry[k];
         if (c) c.visible = e.c > 0 && e.ct === k && e.a !== Anim.GATHER;
@@ -528,6 +533,7 @@ export function applySnap(e: CEnt, s: EntSnap, now: number) {
   e.q = s.q;
   e.r = s.r;
   e.fa = s.fa;
+  e.fm = s.fm === 1;
   e.owner = s.o;
   e.stale = false;
 }

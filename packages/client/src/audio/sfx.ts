@@ -121,8 +121,10 @@ class Sfx {
   }
 
   /** a work stroke (axe, pick, hammer) at a world position */
-  work(kind: 'chop' | 'mine' | 'build', x: number, y: number) {
-    this.play(kind, { x, y, vol: kind === 'build' ? 0.4 : 0.5 });
+  work(kind: 'chop' | 'mine' | 'build' | 'hoe', x: number, y: number) {
+    // a hoe biting soil: the dull knock of the build sample, pitched down and quiet
+    if (kind === 'hoe') this.play('build', { x, y, vol: 0.18, rate: 0.55 });
+    else this.play(kind, { x, y, vol: kind === 'build' ? 0.4 : 0.5 });
   }
 
   private throttle(key: string, ms: number) {

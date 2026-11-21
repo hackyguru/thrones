@@ -146,5 +146,5 @@ export const GATHER_RATES: Record<string, number> = {
   gold: 0.65,
   stone: 0.6,
   berries: 0.7,
-  farm: 0.6,
+  farm: 0.67,
 };

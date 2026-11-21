@@ -934,7 +934,7 @@ export interface Rig {
   legs: THREE.Object3D[];
   armR: THREE.Object3D;
   armL: THREE.Object3D;
-  tools: Partial<Record<'axe' | 'pick' | 'hammer' | 'basket', THREE.Object3D>>;
+  tools: Partial<Record<'axe' | 'pick' | 'hammer' | 'basket' | 'hoe', THREE.Object3D>>;
   carry: Partial<Record<ResourceType, THREE.Object3D>>;
   trunk?: THREE.Object3D;
   tail?: THREE.Object3D;
@@ -1023,6 +1023,12 @@ function humanVillagerKit(h: HumanRig, tools: Rig['tools'], carry: Rig['carry'])
     add(g, G.cone(0.022, 0.2, 6), steel(), 0, 0.1, 0);
     add(g, G.cone(0.022, 0.16, 6), steel(), 0, -0.08, 0).rotation.x = Math.PI;
     add(g, G.box(0.04, 0.04, 0.05), darkWood(), 0, 0, 0);
+  });
+  // mamoty: the broad-bladed hoe of Indian fields, its blade set back toward the handle
+  tools.hoe = tool(0.95, 0.6, (g) => {
+    add(g, G.cyl(0.026, 0.026, 0.07, 8), steel(), 0, 0, 0).rotation.x = Math.PI / 2;
+    const blade = add(g, G.box(0.2, 0.17, 0.012), steel(), 0, 0.08, -0.03);
+    blade.rotation.x = -0.45;
   });
   tools.hammer = tool(0.6, 0.28, (g) => {
     add(g, G.box(0.07, 0.15, 0.07), darkWood(), 0, 0, 0);

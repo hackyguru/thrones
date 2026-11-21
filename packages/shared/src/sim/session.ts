@@ -101,7 +101,7 @@ export class GameSession {
       const ents: EntSnap[] = [];
       for (const e of w.entities.values()) {
         if (e.kind === 'resource') continue;
-        if (e.owner === slot || w.visibleTo(slot, e)) ents.push(serialize(e, e.owner === slot));
+        if (e.owner === slot || w.visibleTo(slot, e)) ents.push(serialize(e, e.owner === slot, w));
       }
       const ev: GameEvent[] = [];
       for (const r of w.events) {
@@ -185,7 +185,7 @@ function visibleAt(w: World, slot: number, x: number, y: number) {
   return w.inBounds(tx, ty) && p.visible[ty * w.size + tx] > 0;
 }
 
-function serialize(e: Entity, own: boolean): EntSnap {
+function serialize(e: Entity, own: boolean, w: World): EntSnap {
   const s: EntSnap = { i: e.id, k: e.kind === 'unit' ? 0 : 1, t: e.type, o: e.owner, x: r2(e.x), y: r2(e.y), h: Math.ceil(e.hp), m: e.maxHp };
   if (e.kind === 'unit') {
     s.a = e.anim;
@@ -194,7 +194,10 @@ function serialize(e: Entity, own: boolean): EntSnap {
       s.c = Math.floor(e.carry);
       s.ct = e.carryType!;
     }
-    if (e.order?.type === 'gather') s.g = e.order.resType;
+    if (e.order?.type === 'gather') {
+      s.g = e.order.resType;
+      if (w.entities.get(e.order.target)?.type === 'farm') s.fm = 1;
+    }
     if (own && e.stance) s.st = e.stance;
   } else {
     if (!e.built) s.p = r2(e.progress);

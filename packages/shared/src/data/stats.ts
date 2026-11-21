@@ -91,7 +91,8 @@ export function gatherRate(civ: CivId, resType: ResourceType, source: 'farm' | '
   const m = CIVS[civ].mods;
   const t = techMods(techs);
   let base: number;
-  if (resType === 'food') base = source === 'farm' ? 0.6 : 0.7;
+  // farm 0.67: farmers walk into the field to work, a little further than to a bush's edge
+  if (resType === 'food') base = source === 'farm' ? 0.67 : 0.7;
   else if (resType === 'wood') base = 0.75;
   else if (resType === 'gold') base = 0.65;
   else base = 0.6;

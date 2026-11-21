@@ -24,6 +24,11 @@ export interface Order {
   pace?: number;
   /** order to go back to once this one is done (breaking through a wall on the way) */
   resume?: Order;
+  /** farming: the spot in the field being worked this trip */
+  wx?: number;
+  wy?: number;
+  /** ticks spent walking to that spot inside the field */
+  wt?: number;
 }
 
 export interface Entity {
@@ -581,6 +586,53 @@ export class World {
     return false;
   }
 
+  /**
+   * Farmers work inside the field, each at their own spot, picked afresh every trip so a few
+   * farmers spread over the rows. Returns true once standing on the spot.
+   */
+  private toFarmSpot(u: Entity, t: Entity, o: Order): boolean {
+    if (o.wx === undefined || o.wy === undefined) {
+      const h = Math.imul(u.id * 7919 + this.tick, 2654435761) >>> 0;
+      const along = 0.6 + ((h & 1023) / 1023) * (t.size - 1.2);
+      const depth = 0.65 + (((h >>> 10) & 1023) / 1023) * 0.4;
+      // work a row near the side of the field we come from, so the walk to the drop-off stays
+      // short; where along that side is spread per farmer and per trip
+      const cx = t.tx + t.size / 2, cy = t.ty + t.size / 2;
+      if (Math.abs(u.x - cx) > Math.abs(u.y - cy)) {
+        o.wx = u.x < cx ? t.tx + depth : t.tx + t.size - depth;
+        o.wy = t.ty + along;
+      } else {
+        o.wx = t.tx + along;
+        o.wy = u.y < cy ? t.ty + depth : t.ty + t.size - depth;
+      }
+      u.path = null;
+      u.repath = 0;
+      o.wt = 0;
+    }
+    const d = Math.hypot(o.wx - u.x, o.wy - u.y);
+    if (d <= 0.25) {
+      u.path = null;
+      u.fails = 0;
+      return true;
+    }
+    // at or in the field: it is open ground, so walk straight to the spot
+    if (this.distTo(u, t) <= 0.6) {
+      const before = d;
+      this.stepToward(u, o.wx, o.wy);
+      // blocked, or jostled by other farmers for a couple of seconds: work where we are
+      o.wt = (o.wt ?? 0) + 1;
+      if (Math.hypot(o.wx - u.x, o.wy - u.y) >= before - 1e-4 || o.wt > TICK_RATE * 2) {
+        o.wx = u.x;
+        o.wy = u.y;
+        return true;
+      }
+      return false;
+    }
+    // still on the way: path to the field like any other target
+    this.approach(u, t, 0.5);
+    return false;
+  }
+
   private face(u: Entity, t: Entity) {
     u.facing = Math.atan2(t.y - u.y, t.x - u.x);
   }
@@ -1133,6 +1185,7 @@ export class World {
         o.target = alt.id;
         o.x = alt.x;
         o.y = alt.y;
+        o.wx = o.wy = undefined;
         t = alt;
         u.path = null;
         u.fails = 0;
@@ -1163,6 +1216,7 @@ export class World {
         p.stats.gathered[ct] += u.carry;
         u.carry = 0;
         o.phase = 'go';
+        o.wx = o.wy = undefined;
         u.path = null;
         u.repath = 0;
         if (!t) this.idle(u);
@@ -1170,8 +1224,9 @@ export class World {
       return;
     }
     if (!t) return;
-    if (this.approach(u, t, INTERACT_RANGE)) {
-      this.face(u, t);
+    const farm = t.type === 'farm';
+    if (farm ? this.toFarmSpot(u, t, o) : this.approach(u, t, INTERACT_RANGE)) {
+      if (!farm) this.face(u, t);
       u.anim = Anim.GATHER;
       if (u.carryType !== o.resType) {
         u.carryType = o.resType!;

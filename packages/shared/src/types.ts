@@ -95,6 +95,8 @@ export interface EntSnap {
   ct?: ResourceType;
   /** gather type (tool to show) */
   g?: ResourceType;
+  /** 1 = working a farm (hoeing rather than picking) */
+  fm?: 1;
   /** construction progress (buildings, 0..1). Absent when complete. */
   p?: number;
   /** training / research queue (owner only): [unit type or tech id, progress] */
