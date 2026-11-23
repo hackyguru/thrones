@@ -9,6 +9,8 @@ export interface SaveMeta {
   minutes: number;
   /** camera focus when saved */
   cam?: [number, number];
+  /** guided first game: the step reached */
+  tut?: number;
 }
 
 async function gzip(text: string): Promise<string> {

@@ -37,7 +37,8 @@ export type BuildingType =
 
 export type ResourceNodeType = 'tree' | 'palm' | 'gold_mine' | 'stone_mine' | 'berry_bush';
 
-export type Difficulty = 'easy' | 'normal' | 'hard' | 'raja';
+/** 'guided' is the tutorial opponent: an Easy economy that leaves the learner alone for a long while */
+export type Difficulty = 'guided' | 'easy' | 'normal' | 'hard' | 'raja';
 
 /** 0 aggressive (chase anything in sight), 1 defensive (engage, then return), 2 hold ground (never move) */
 export type Stance = 0 | 1 | 2;

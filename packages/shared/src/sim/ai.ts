@@ -53,6 +53,7 @@ const ECO: TechId[] = ['iron_axe', 'mining_picks', 'bullock_carts', 'irrigation'
 const ARMS: TechId[] = ['forging', 'fletching', 'lamellar', 'quilted', 'wootz_steel', 'mail'];
 
 export const PROFILES: Record<Difficulty, Profile> = {
+  guided: { vills: 12, firstAttack: 1200, interval: 240, wave0: 4, waveGrow: 1, counter: 0, retreat: false, flee: false, raid: false, focus: false, maxProd: 1, towers: 0, defendR: 12, age2: 99, age3: 99, techs: [], armyRate: 0.4, maxArmy: 8 },
   easy: { vills: 16, firstAttack: 540, interval: 170, wave0: 4, waveGrow: 2, counter: 0.15, retreat: false, flee: false, raid: false, focus: false, maxProd: 2, towers: 0, defendR: 12, age2: 16, age3: 99, techs: ['iron_axe'], armyRate: 0.8, maxArmy: 12 },
   normal: { vills: 28, firstAttack: 360, interval: 110, wave0: 7, waveGrow: 3, counter: 0.55, retreat: true, flee: false, raid: false, focus: false, maxProd: 4, towers: 1, defendR: 18, age2: 15, age3: 26, techs: ['iron_axe', 'mining_picks', 'forging', 'bullock_carts', 'fletching', 'lamellar', 'irrigation'], armyRate: 2.6, maxArmy: 60 },
   hard: { vills: 38, firstAttack: 345, interval: 105, wave0: 8, waveGrow: 3, counter: 0.85, retreat: true, flee: true, raid: true, focus: true, maxProd: 6, towers: 2, defendR: 22, age2: 15, age3: 25, techs: [...ECO.slice(0, 2), 'forging', 'bullock_carts', 'fletching', 'lamellar', 'irrigation', 'quilted', 'bow_saw', 'deep_shafts', 'wootz_steel', 'mail'], armyRate: 3.2, maxArmy: 80, smartEco: true },

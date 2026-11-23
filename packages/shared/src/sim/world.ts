@@ -424,7 +424,7 @@ export class World {
     return best;
   }
 
-  private nearestWalkable(x: number, y: number, maxR = 6, owner = -1): Vec2 | null {
+  nearestWalkable(x: number, y: number, maxR = 6, owner = -1): Vec2 | null {
     const tx = Math.floor(x), ty = Math.floor(y);
     if (this.passable(tx, ty, owner)) return { x, y };
     for (let r = 1; r <= maxR; r++) {

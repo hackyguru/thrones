@@ -8,6 +8,7 @@ import { civPicker, colorSwatches, el, hex, roomList, roomSlots, sounds } from '
 import { ICONS } from './ui/icons';
 import { controlsTable, orderVerb, settings } from './ui/settings';
 import { sfx } from './audio/sfx';
+import { Tutorial, TUTORIAL_STEPS } from './ui/tutorial';
 
 const store = {
   get: (k: string, d = '') => {
@@ -81,7 +82,8 @@ export class App {
       <div class="title-menu panel ornate">
         <label class="name-field">Your name<input maxlength="20" value="${escapeHtml(this.name)}" /></label>
         ${saveMeta() ? `<button class="btn primary" data-go="continue">Continue <span class="btn-sub">${escapeHtml(saveMeta()!.civ)} · ${saveMeta()!.minutes} min</span></button>` : ''}
-        <button class="btn ${saveMeta() ? '' : 'primary'}" data-go="skirmish">Skirmish vs AI</button>
+        <button class="btn ${!saveMeta() && !store.get('tutorDone', '') ? 'primary' : ''}" data-go="tutorial">Guided First Game</button>
+        <button class="btn ${!saveMeta() && store.get('tutorDone', '') ? 'primary' : ''}" data-go="skirmish">Skirmish vs AI</button>
         <button class="btn" data-go="online">Multiplayer Online</button>
         <button class="btn" data-go="codex">Civilizations</button>
         <button class="btn ghost" data-go="help">How to Play</button>
@@ -96,6 +98,7 @@ export class App {
     s.addEventListener('click', (e) => {
       const go = (e.target as HTMLElement).closest('[data-go]')?.getAttribute('data-go');
       if (go === 'skirmish') this.showSkirmish();
+      if (go === 'tutorial') this.startTutorial();
       if (go === 'continue') void this.continueSave();
       if (go === 'online') void this.showOnline();
       if (go === 'codex') this.showCodex();
@@ -378,14 +381,33 @@ export class App {
       }
       return;
     }
-    this.startGame(link, () => {
-      link.start();
-      if (meta?.cam) this.game?.camera.jumpTo(meta.cam[0], meta.cam[1]);
-    });
+    this.startGame(
+      link,
+      () => {
+        link.start();
+        if (meta?.cam) this.game?.camera.jumpTo(meta.cam[0], meta.cam[1]);
+      },
+      meta?.tut !== undefined && meta.tut < TUTORIAL_STEPS ? meta.tut : undefined,
+    );
+  }
+
+  /** a real match against a passive rival, with goals that teach the basics */
+  private startTutorial() {
+    const civ = (store.get('civ', 'maurya') as CivId | 'random');
+    const mine = civ === 'random' || !CIVS[civ] ? 'maurya' : civ;
+    const color = Number(store.get('color', '0')) || 0;
+    const players: PlayerInfo[] = [
+      { slot: 0, name: this.name, civ: mine, color, isAI: false },
+      { slot: 1, name: 'Rival Raja', civ: randomCiv(), color: (color + 3) % 6, isAI: true },
+    ];
+    const link = new LocalLink(players, 0, { difficulty: 'guided' });
+    this.startGame(link, () => link.start(), 0);
   }
 
   // ---------------------------------------------------------------------------
-  private startGame(link: GameLink, begin: () => void) {
+  private tutorial: Tutorial | null = null;
+  private tutStep: number | undefined;
+  private startGame(link: GameLink, begin: () => void, tutorialStep?: number) {
     sfx.stopDrone();
     this.screen?.remove();
     this.screen = null;
@@ -401,10 +423,21 @@ export class App {
       this.input = input;
       this.hud = hud;
       sfx.listener = (x, y) => game.soundAt(x, y);
+      this.tutStep = undefined;
+      if (tutorialStep !== undefined) {
+        const tut = new Tutorial(game, hud, this.ui, tutorialStep);
+        this.tutorial = tut;
+        tut.onStep = (i) => (this.tutStep = i);
+        tut.onFinish = () => {
+          store.set('tutorDone', '1');
+          this.tutorial = null;
+        };
+      }
       game.listeners.onFrame = (dt) => {
         input.frame();
         hud.update(dt);
         sfx.update(dt);
+        this.tutorial?.frame(dt);
       };
       game.listeners.onEvent = (ev) => {
         hud.onEvent(ev);
@@ -481,6 +514,7 @@ export class App {
         civ: CIVS[g.civOf(g.you)].name,
         minutes: Math.round(g.tick / TICK_RATE / 60),
         cam: [Math.round(g.camera.target.x * 10) / 10, Math.round(g.camera.target.y * 10) / 10],
+        tut: this.tutStep,
       };
       if (now) writeSaveNow(json, meta);
       else void writeSave(json, meta).catch((err) => console.warn('autosave failed', err));
@@ -491,6 +525,8 @@ export class App {
 
   private endGame() {
     this.stopAutosave();
+    this.tutorial?.dispose();
+    this.tutorial = null;
     sfx.listener = null;
     this.input?.dispose();
     this.hud?.dispose();

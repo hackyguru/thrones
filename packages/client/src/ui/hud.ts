@@ -262,6 +262,22 @@ export class Hud {
     if (!settings.hintSeen) this.showHint();
   }
 
+  /** tutorial: command-card buttons whose title matches glow until the step is done */
+  private glow: RegExp | null = null;
+  setGlow(r: RegExp | null) {
+    this.glow = r;
+    this.applyGlow();
+  }
+  private applyGlow() {
+    this.card.querySelectorAll<HTMLElement>('.cmd[data-i]').forEach((el) => {
+      const b = this.buttons[Number(el.dataset.i)];
+      el.classList.toggle('tut-glow', !!this.glow && !!b && this.glow.test(b.title));
+    });
+  }
+  hideHint() {
+    this.q('.hint').classList.add('hidden');
+  }
+
   showControls() {
     this.q('.controls-body').innerHTML = controlsTable();
     this.q('.controls').classList.remove('hidden');
@@ -574,6 +590,7 @@ export class Hud {
         const b = buttons[i];
         return `<button class="cmd ${b.disabled ? 'disabled' : ''} ${b.active ? 'active' : ''} ${b.locked ? 'locked' : ''}" data-i="${i}">${b.icon}<kbd>${k}</kbd></button>`;
       }).join('');
+      this.applyGlow();
     }
     // selection panel
     if (!sel.length) {
